@@ -62,4 +62,8 @@ Filename: "ms-settings:defaultapps"; Description: "{cm:OpenDefaultApps}"; Flags:
 Filename: "{app}\{#AppExeName}"; Description: "{cm:LaunchProgram,{#AppName}}"; Flags: postinstall nowait skipifsilent unchecked
 
 [UninstallRun]
+; CloseApplications greift nur beim Installieren: offene Fenster aus diesem Ordner sonst sperren die EXE,
+; und der Ordner bliebe nach dem Entfernen liegen (auf der Test-VM so passiert). ponytail: trifft jede Fletta.exe,
+; auch aus einem anderen Ordner; Pfadfilter erst, wenn das stoert (Apostroph im Profilpfad bricht PowerShell-Quoting).
+Filename: "{sys}\taskkill.exe"; Parameters: "/F /IM {#AppExeName}"; RunOnceId: "CloseApp"; Flags: runhidden waituntilterminated
 Filename: "{app}\{#AppExeName}"; Parameters: "--unregister"; RunOnceId: "UnregisterPdf"; Flags: runhidden waituntilterminated
