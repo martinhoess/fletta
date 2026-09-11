@@ -1,0 +1,60 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <!-- LibraryImport erzeugt die Marshalling-Stubs als unsicheren Code. -->
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <AssemblyName>Fletta</AssemblyName>
+    <RootNamespace>Fletta</RootNamespace>
+    <Version>0.9.0</Version>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <ApplicationIcon>fletta.ico</ApplicationIcon>
+    <!-- pdfium.dll gibt es hier nur für x64. -->
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <SelfContained>false</SelfContained>
+    <!-- Vorkompiliert statt JIT beim Start; greift bei dotnet publish. -->
+    <PublishReadyToRun>true</PublishReadyToRun>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Resource Include="fletta.ico" />
+  </ItemGroup>
+
+  <!-- PDFium aus bblanchon/pdfium-binaries. Tag und SHA-256 ziehen immer zusammen um. -->
+  <PropertyGroup>
+    <PdfiumTag>chromium/8044</PdfiumTag>
+    <PdfiumSha256>78a17d9a5f14467631c26a3ac8741b27a0471ecc05bd6a119b523598160a0537</PdfiumSha256>
+    <PdfiumDir>$(MSBuildProjectDirectory)\..\lib\pdfium-$([System.IO.Path]::GetFileName('$(PdfiumTag)'))</PdfiumDir>
+    <PdfiumArchive>$(PdfiumDir)\pdfium-win-x64.tgz</PdfiumArchive>
+  </PropertyGroup>
+
+  <Target Name="FetchPdfium" BeforeTargets="PrepareForBuild" Condition="!Exists('$(PdfiumDir)\bin\pdfium.dll')">
+    <DownloadFile SourceUrl="https://github.com/bblanchon/pdfium-binaries/releases/download/$(PdfiumTag)/pdfium-win-x64.tgz"
+                  DestinationFolder="$(PdfiumDir)" />
+    <GetFileHash Files="$(PdfiumArchive)" Algorithm="SHA256">
+      <Output TaskParameter="Hash" PropertyName="_PdfiumActualSha256" />
+    </GetFileHash>
+    <!-- Bedingungen vergleichen ohne Groß-/Kleinschreibung, das Hex-Format ist also egal. -->
+    <Error Condition="'$(_PdfiumActualSha256)' != '$(PdfiumSha256)'"
+           Text="pdfium-win-x64.tgz hat SHA-256 $(_PdfiumActualSha256), erwartet $(PdfiumSha256). Download beschädigt oder Release ausgetauscht – nichts entpackt." />
+    <!-- Das tar von Windows (bsdtar) mit vollem Pfad: das GNU-tar aus Git für Windows liest "D:" als entfernten Host. -->
+    <Exec Command="&quot;$(SystemRoot)\System32\tar.exe&quot; -xzf &quot;$(PdfiumArchive)&quot; -C &quot;$(PdfiumDir)&quot; bin/pdfium.dll licenses" />
+    <Delete Files="$(PdfiumArchive)" />
+  </Target>
+
+  <!-- Im Target statt auf Projektebene: die Platzhalter sollen erst nach dem Entpacken ausgewertet werden. -->
+  <Target Name="IncludePdfium" BeforeTargets="AssignTargetPaths">
+    <!-- Eigener Itemtyp für die Lizenzen: ein unqualifiziertes %(Filename) würde über alle None-Items
+         batchen und jede Datei mehrfach anlegen (NETSDK1152 beim Publish). -->
+    <ItemGroup>
+      <_PdfiumLicense Include="$(PdfiumDir)\licenses\*.txt" />
+      <None Include="$(PdfiumDir)\bin\pdfium.dll" Link="pdfium.dll" CopyToOutputDirectory="PreserveNewest" />
+      <None Include="@(_PdfiumLicense)" Link="licenses\%(_PdfiumLicense.Filename)%(_PdfiumLicense.Extension)" CopyToOutputDirectory="PreserveNewest" />
+    </ItemGroup>
+  </Target>
+
+</Project>

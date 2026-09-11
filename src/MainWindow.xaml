@@ -1,0 +1,193 @@
+<Window x:Class="Fletta.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:local="clr-namespace:Fletta"
+        Title="Fletta" Width="1000" Height="900" MinWidth="520" MinHeight="400"
+        WindowStartupLocation="CenterScreen"
+        Background="{StaticResource CanvasBrush}" Foreground="{StaticResource TextBrush}"
+        FontFamily="Segoe UI Variable Text, Segoe UI" FontSize="13"
+        AllowDrop="True" UseLayoutRounding="True" Icon="fletta.ico">
+  <Grid>
+    <Grid.RowDefinitions>
+      <RowDefinition Height="44" />
+      <RowDefinition />
+    </Grid.RowDefinitions>
+
+    <!-- In der Farbe der Titelleiste: beides zusammen wirkt wie eine Leiste. -->
+    <Border Background="{StaticResource ChromeBrush}" BorderBrush="{StaticResource LineBrush}" BorderThickness="0,0,0,1">
+      <Grid>
+      <!-- Oben links über der Seitenleiste, wie bei SwiftPDF: klappt sie ein und aus (auch F4). -->
+      <ToggleButton x:Name="SidebarButton" Style="{StaticResource ToolToggle}" Content="{StaticResource IconSidebar}"
+                    HorizontalAlignment="Left" Margin="8,0,0,0" ToolTip="Seitenleiste ein/aus (F4)" Click="OnSidebarClick" />
+      <StackPanel Orientation="Horizontal" HorizontalAlignment="Center" VerticalAlignment="Center">
+        <Button Style="{StaticResource ToolButton}" Content="{StaticResource IconOpen}" ToolTip="Öffnen (Strg+O)" Click="OnOpenClick" />
+        <Button x:Name="PrintButton" Style="{StaticResource ToolButton}" Content="{StaticResource IconPrint}"
+                ToolTip="Drucken (Strg+P)" Click="OnPrintClick" />
+        <Rectangle Style="{StaticResource ToolSeparator}" />
+        <Button x:Name="RotateLeftButton" Style="{StaticResource ToolButton}" Content="{StaticResource IconRotateLeft}"
+                ToolTip="Links drehen (L) – nur Ansicht" Click="OnRotateLeftClick" />
+        <Button x:Name="RotateRightButton" Style="{StaticResource ToolButton}" Content="{StaticResource IconRotateRight}"
+                ToolTip="Rechts drehen (R) – nur Ansicht" Click="OnRotateRightClick" />
+        <Rectangle Style="{StaticResource ToolSeparator}" />
+        <Button x:Name="FitWidthButton" Style="{StaticResource ToolButton}" Content="{StaticResource IconFitWidth}"
+                ToolTip="Seitenbreite (Strg+2)" Click="OnFitWidthClick" />
+        <Button x:Name="FitPageButton" Style="{StaticResource ToolButton}" Content="{StaticResource IconFitPage}"
+                ToolTip="Ganze Seite (Strg+0)" Click="OnFitPageClick" />
+        <Rectangle Style="{StaticResource ToolSeparator}" />
+        <ToggleButton x:Name="SpreadsButton" Style="{StaticResource ToolToggle}" Content="{StaticResource IconSpreads}"
+                      ToolTip="Doppelseite wie ein Buch, Deckblatt einzeln (B)" Click="OnSpreadsClick" />
+        <ToggleButton x:Name="PagedButton" Style="{StaticResource ToolToggle}" Content="{StaticResource IconPaged}"
+                      ToolTip="Seitenweise blättern (S)" Click="OnPagedClick" />
+        <Rectangle Style="{StaticResource ToolSeparator}" />
+        <Button x:Name="CopyButton" Style="{StaticResource ToolButton}" Content="{StaticResource IconCopy}"
+                ToolTip="Seite kopieren: Bild und Text (Strg+C) – nur Text: Strg+Umschalt+C" Click="OnCopyClick" />
+        <Rectangle Style="{StaticResource ToolSeparator}" />
+        <Button Style="{StaticResource ToolButton}" Content="{StaticResource IconHelp}" ToolTip="Tastenkürzel (F1 oder ?)" Click="OnHelpClick" />
+      </StackPanel>
+      </Grid>
+    </Border>
+
+    <Grid Grid.Row="1">
+      <Grid.ColumnDefinitions>
+        <ColumnDefinition x:Name="SideColumn" Width="220" MinWidth="140" MaxWidth="480" />
+        <ColumnDefinition Width="Auto" />
+        <ColumnDefinition />
+      </Grid.ColumnDefinitions>
+
+      <!-- Seitenleiste: Reiter „Seiten“ (Miniaturen) und „Gliederung“ (Lesezeichen des PDFs). -->
+      <Grid x:Name="SidePanel">
+        <Grid.RowDefinitions>
+          <RowDefinition Height="Auto" />
+          <RowDefinition />
+        </Grid.RowDefinitions>
+        <Border Background="{StaticResource PanelBrush}" BorderBrush="{StaticResource LineBrush}" BorderThickness="0,0,1,1" Padding="8">
+          <UniformGrid Columns="2">
+            <ToggleButton x:Name="PagesTab" Style="{StaticResource TabToggle}" Content="Seiten" IsChecked="True" Click="OnPagesTabClick" />
+            <ToggleButton x:Name="OutlineTab" Style="{StaticResource TabToggle}" Content="Gliederung" Margin="4,0,0,0" Click="OnOutlineTabClick" />
+          </UniformGrid>
+        </Border>
+        <local:ThumbnailPanel x:Name="Thumbs" Grid.Row="1" />
+        <Border x:Name="OutlinePanel" Grid.Row="1" Visibility="Collapsed" Background="{StaticResource PanelBrush}"
+                BorderBrush="{StaticResource LineBrush}" BorderThickness="0,0,1,0">
+          <Grid>
+            <!-- Foreground ausdrücklich: die ListBox brächte sonst die Systemtextfarbe mit, fast Schwarz auf Dunkel. -->
+            <ListBox x:Name="OutlineList" Background="Transparent" BorderThickness="0" Padding="0,4"
+                     Foreground="{StaticResource TextBrush}"
+                     ScrollViewer.HorizontalScrollBarVisibility="Disabled" PreviewMouseLeftButtonUp="OnOutlineClick">
+              <ListBox.ItemContainerStyle>
+                <Style TargetType="ListBoxItem">
+                  <Setter Property="FocusVisualStyle" Value="{x:Null}" />
+                  <Setter Property="Template">
+                    <Setter.Value>
+                      <ControlTemplate TargetType="ListBoxItem">
+                        <Border x:Name="Row" Background="Transparent" CornerRadius="6" Padding="8,5" Margin="6,0">
+                          <ContentPresenter />
+                        </Border>
+                        <ControlTemplate.Triggers>
+                          <Trigger Property="IsMouseOver" Value="True">
+                            <Setter TargetName="Row" Property="Background" Value="{StaticResource RaiseBrush}" />
+                          </Trigger>
+                        </ControlTemplate.Triggers>
+                      </ControlTemplate>
+                    </Setter.Value>
+                  </Setter>
+                </Style>
+              </ListBox.ItemContainerStyle>
+              <ListBox.ItemTemplate>
+                <DataTemplate>
+                  <DockPanel>
+                    <TextBlock DockPanel.Dock="Right" Text="{Binding PageLabel}" Foreground="{StaticResource MutedBrush}" Margin="8,0,0,0" />
+                    <TextBlock Text="{Binding Title}" Margin="{Binding Indent}" TextTrimming="CharacterEllipsis" ToolTip="{Binding Title}" />
+                  </DockPanel>
+                </DataTemplate>
+              </ListBox.ItemTemplate>
+            </ListBox>
+            <TextBlock x:Name="OutlineEmpty" Visibility="Collapsed" Margin="16" TextWrapping="Wrap"
+                       Foreground="{StaticResource MutedBrush}" />
+          </Grid>
+        </Border>
+      </Grid>
+      <!-- Ziehen ändert die Breite der Seitenleiste; F4 blendet sie aus. -->
+      <GridSplitter x:Name="SideSplitter" Grid.Column="1" Width="4" HorizontalAlignment="Center" VerticalAlignment="Stretch"
+                    ResizeBehavior="PreviousAndNext" Background="Transparent" Focusable="False" />
+
+      <Grid Grid.Column="2">
+      <!-- Senkrechte Leiste immer sichtbar: sonst ändert ihr Erscheinen die Breite und damit den Zoom. -->
+      <!-- Ziehen zum Scrollen über Preview: den Druck behandelt der ScrollViewer sonst selbst (Fokus). -->
+      <ScrollViewer x:Name="Scroller" HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Visible"
+                    PreviewMouseLeftButtonDown="OnDragStart" MouseMove="OnDragMove"
+                    PreviewMouseLeftButtonUp="OnDragEnd" LostMouseCapture="OnDragLost">
+        <ScrollViewer.Resources>
+          <!-- Die Ecke zwischen beiden Leisten füllt die Vorlage von Windows mit dieser Systemfarbe. -->
+          <SolidColorBrush x:Key="{x:Static SystemColors.ControlBrushKey}" Color="#141715" />
+        </ScrollViewer.Resources>
+        <!-- Nur die sichtbaren Seiten stehen als Elemente darin, Position und Größe rechnet PageLayout. -->
+        <Canvas x:Name="PageCanvas" />
+      </ScrollViewer>
+
+      <StackPanel x:Name="MessagePanel" Visibility="Collapsed" MaxWidth="440" Margin="24"
+                  HorizontalAlignment="Center" VerticalAlignment="Center">
+        <TextBlock x:Name="MessageTitle" FontSize="20" FontWeight="SemiBold" TextWrapping="Wrap" />
+        <TextBlock x:Name="MessageText" Foreground="{StaticResource MutedBrush}" FontSize="14" Margin="0,10,0,0" TextWrapping="Wrap" />
+      </StackPanel>
+
+      <Border x:Name="ZoomPill" Style="{StaticResource Pill}" HorizontalAlignment="Left" Margin="18,0,0,18">
+        <StackPanel Orientation="Horizontal">
+          <Button Style="{StaticResource ToolButton}" Content="{StaticResource IconMinus}" ToolTip="Verkleinern (−)" Click="OnZoomOutClick" />
+          <Button x:Name="ZoomButton" Style="{StaticResource TextButton}" MinWidth="64" ToolTip="Zoomstufe wählen" Click="OnZoomMenuClick" />
+          <Button Style="{StaticResource ToolButton}" Content="{StaticResource IconPlus}" ToolTip="Vergrößern (+)" Click="OnZoomInClick" />
+        </StackPanel>
+      </Border>
+      <Popup x:Name="ZoomMenu" PlacementTarget="{Binding ElementName=ZoomButton}" Placement="Top" VerticalOffset="-6"
+             StaysOpen="False" AllowsTransparency="True">
+        <Border Background="{StaticResource ChromeBrush}" BorderBrush="{StaticResource LineBrush}" BorderThickness="1"
+                CornerRadius="8" Padding="4">
+          <StackPanel x:Name="ZoomMenuItems" MinWidth="150" />
+        </Border>
+      </Popup>
+
+      <!-- Rechts um die Breite der Bildlaufleiste eingerückt. -->
+      <Border x:Name="PagePill" Style="{StaticResource Pill}" HorizontalAlignment="Right" Margin="0,0,34,18">
+        <StackPanel Orientation="Horizontal">
+          <Button Style="{StaticResource ToolButton}" Content="{StaticResource IconPrev}" ToolTip="Vorige Seite (←)" Click="OnPrevClick" />
+          <TextBox x:Name="PageBox" Style="{StaticResource PageBox}" ToolTip="Seitennummer eingeben, Enter springt hin"
+                   KeyDown="OnPageBoxKeyDown" GotKeyboardFocus="OnPageBoxFocus" LostKeyboardFocus="OnPageBoxBlur" />
+          <TextBlock x:Name="PageCount" Foreground="{StaticResource MutedBrush}" VerticalAlignment="Center" Margin="6,0,4,0" />
+          <Button Style="{StaticResource ToolButton}" Content="{StaticResource IconNext}" ToolTip="Nächste Seite (→)" Click="OnNextClick" />
+        </StackPanel>
+      </Border>
+
+      <!-- Kurze Rückmeldung (kopiert, gedruckt, Fehler), verschwindet nach drei Sekunden. -->
+      <Border x:Name="NoticePill" Style="{StaticResource Pill}" VerticalAlignment="Top" HorizontalAlignment="Center"
+              Margin="0,18,0,0" Visibility="Collapsed" IsHitTestVisible="False">
+        <TextBlock x:Name="NoticeText" Margin="10,4" />
+      </Border>
+      </Grid>
+    </Grid>
+
+    <!-- Tastenkürzel-Übersicht (F1 oder ?), Klick daneben oder Esc schließt. -->
+    <Border x:Name="HelpOverlay" Grid.Row="1" Background="#CC141715" Visibility="Collapsed" MouseLeftButtonDown="OnHelpOverlayClick">
+      <Border Background="{StaticResource ChromeBrush}" BorderBrush="{StaticResource LineBrush}" BorderThickness="1"
+              CornerRadius="12" Padding="22,18" MaxWidth="620" HorizontalAlignment="Center" VerticalAlignment="Center">
+        <StackPanel>
+          <TextBlock Text="Tastenkürzel" FontSize="17" FontWeight="SemiBold" Margin="0,0,0,12" />
+          <ItemsControl x:Name="HelpKeys">
+            <ItemsControl.ItemTemplate>
+              <DataTemplate>
+                <Grid Margin="0,3">
+                  <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="210" />
+                    <ColumnDefinition />
+                  </Grid.ColumnDefinitions>
+                  <TextBlock Text="{Binding Keys}" FontFamily="Cascadia Mono, Consolas" />
+                  <TextBlock Grid.Column="1" Text="{Binding Action}" Foreground="{StaticResource MutedBrush}" TextWrapping="Wrap" />
+                </Grid>
+              </DataTemplate>
+            </ItemsControl.ItemTemplate>
+          </ItemsControl>
+          <TextBlock Text="Esc oder F1 schließt diese Übersicht." Foreground="{StaticResource MutedBrush}" Margin="0,14,0,0" />
+        </StackPanel>
+      </Border>
+    </Border>
+  </Grid>
+</Window>

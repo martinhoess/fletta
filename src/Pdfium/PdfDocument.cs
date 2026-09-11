@@ -1,0 +1,172 @@
+using System.Runtime.InteropServices;
+using System.Text;
+using System.Windows;
+using System.Windows.Media;
+using System.Windows.Media.Imaging;
+
+namespace Fletta.Pdfium;
+
+/// <summary>Ein geöffnetes PDF. PDFium ist nicht threadsicher: alle Aufrufe aus demselben Thread.</summary>
+public sealed class PdfDocument : IDisposable
+{
+    const int BitmapFormatBgrx = 3;     // FPDFBitmap_BGRx, gleiche Byte-Folge wie PixelFormats.Bgr32
+    const int RenderAnnotations = 0x01; // FPDF_ANNOT
+    const int RenderForPrinting = 0x800; // FPDF_PRINTING
+    const uint White = 0xFFFFFFFF;
+    const uint ActionGoTo = 1;          // PDFACTION_GOTO
+    const int MaxOutlineEntries = 10_000, MaxOutlineDepth = 32;
+
+    // Einmal je Prozess; freigegeben wird beim Beenden vom Betriebssystem.
+    static PdfDocument() => Native.FPDF_InitLibraryWithConfig(new Native.LibraryConfig { Version = 2 });
+
+    nint handle;
+
+    PdfDocument(nint handle)
+    {
+        this.handle = handle;
+        PageCount = Native.FPDF_GetPageCount(handle);
+    }
+
+    public int PageCount { get; }
+
+    /// <summary>Liest nur Querverweistabelle und Seitenbaum, keine Seiteninhalte.</summary>
+    public static PdfDocument Open(string path)
+    {
+        var handle = Native.FPDF_LoadDocument(path, null);
+        return handle == 0 ? throw new PdfException(Native.FPDF_GetLastError()) : new PdfDocument(handle);
+    }
+
+    /// <summary>Seitengröße in PDF-Punkten (1/72 Zoll), ohne die Seite zu laden.</summary>
+    public Size PageSize(int index)
+    {
+        ObjectDisposedException.ThrowIf(handle == 0, this);
+        return Native.FPDF_GetPageSizeByIndexF(handle, index, out var size)
+            ? new Size(size.Width, size.Height)
+            : throw new PdfException(PdfException.PageError);
+    }
+
+    /// <summary>
+    /// Rendert eine Seite auf weißem Grund in genau diese Pixelgröße. quarterTurns dreht zusätzlich
+    /// zum /Rotate des PDFs im Uhrzeigersinn (0–3, der rotate-Wert von FPDF_RenderPageBitmap);
+    /// die Pixelgröße ist dann die gedrehte.
+    /// </summary>
+    public BitmapSource Render(int index, int pixelWidth, int pixelHeight, double dpiX, double dpiY, int quarterTurns)
+    {
+        var page = LoadPage(index);
+        var bitmap = new WriteableBitmap(pixelWidth, pixelHeight, dpiX, dpiY, PixelFormats.Bgr32, null);
+        bitmap.Lock();
+        try
+        {
+            // PDFium schreibt direkt in den Puffer von WPF, ohne Kopie.
+            var target = Native.FPDFBitmap_CreateEx(pixelWidth, pixelHeight, BitmapFormatBgrx,
+                                                    bitmap.BackBuffer, bitmap.BackBufferStride);
+            if (target == 0) throw new PdfException(PdfException.PageError);
+            Native.FPDFBitmap_FillRect(target, 0, 0, pixelWidth, pixelHeight, White);
+            Native.FPDF_RenderPageBitmap(target, page, 0, 0, pixelWidth, pixelHeight, quarterTurns, RenderAnnotations);
+            Native.FPDFBitmap_Destroy(target); // gibt nur die Hülle frei, der Puffer gehört WPF
+            bitmap.AddDirtyRect(new Int32Rect(0, 0, pixelWidth, pixelHeight));
+        }
+        finally
+        {
+            bitmap.Unlock();
+            Native.FPDF_ClosePage(page);
+        }
+        bitmap.Freeze();
+        return bitmap;
+    }
+
+    /// <summary>Text der Seite laut PDFium; leer bei Scans ohne Textschicht.</summary>
+    public unsafe string PageText(int index)
+    {
+        var page = LoadPage(index);
+        var text = Native.FPDFText_LoadPage(page);
+        try
+        {
+            var count = text == 0 ? 0 : Native.FPDFText_CountChars(text);
+            if (count <= 0) return "";
+            var buffer = new ushort[count + 1];
+            int written;
+            fixed (ushort* result = buffer) written = Native.FPDFText_GetText(text, 0, count, result);
+            return new string(MemoryMarshal.Cast<ushort, char>(buffer.AsSpan(0, Math.Max(0, written - 1))));
+        }
+        finally
+        {
+            if (text != 0) Native.FPDFText_ClosePage(text);
+            Native.FPDF_ClosePage(page);
+        }
+    }
+
+    /// <summary>Druckt eine Seite auf ein Drucker-HDC; Koordinaten in Gerätepixeln, Drehung wie bei Render.</summary>
+    public void Print(int index, nint hdc, int x, int y, int width, int height, int quarterTurns)
+    {
+        var page = LoadPage(index);
+        try
+        {
+            if (!Native.FPDF_RenderPage(hdc, page, x, y, width, height, quarterTurns, RenderAnnotations | RenderForPrinting))
+                throw new PdfException(PdfException.PageError);
+        }
+        finally
+        {
+            Native.FPDF_ClosePage(page);
+        }
+    }
+
+    /// <summary>
+    /// Lesezeichen in Lesereihenfolge samt Tiefe; ohne erkennbares Ziel ist Page −1. Kaputte PDFs
+    /// können im Lesezeichenbaum Schleifen haben: jeder Eintrag wird nur einmal besucht, dazu Deckel
+    /// für Anzahl und Tiefe.
+    /// </summary>
+    public IReadOnlyList<OutlineEntry> Outline()
+    {
+        ObjectDisposedException.ThrowIf(handle == 0, this);
+        var entries = new List<OutlineEntry>();
+        var seen = new HashSet<nint>();
+        void Walk(nint parent, int depth)
+        {
+            for (var item = Native.FPDFBookmark_GetFirstChild(handle, parent);
+                 item != 0 && entries.Count < MaxOutlineEntries && seen.Add(item);
+                 item = Native.FPDFBookmark_GetNextSibling(handle, item))
+            {
+                entries.Add(new OutlineEntry(BookmarkTitle(item), BookmarkPage(item), depth));
+                if (depth < MaxOutlineDepth) Walk(item, depth + 1);
+            }
+        }
+        Walk(0, 0);
+        return entries;
+    }
+
+    static unsafe string BookmarkTitle(nint bookmark)
+    {
+        var length = Native.FPDFBookmark_GetTitle(bookmark, null, 0);
+        if (length <= 2) return "";
+        var buffer = new byte[length];
+        fixed (byte* target = buffer) Native.FPDFBookmark_GetTitle(bookmark, target, length);
+        return Encoding.Unicode.GetString(buffer, 0, (int)length - 2); // ohne Terminator
+    }
+
+    /// <summary>Ziel direkt am Lesezeichen oder über eine GoTo-Aktion; sonst −1.</summary>
+    int BookmarkPage(nint bookmark)
+    {
+        var dest = Native.FPDFBookmark_GetDest(handle, bookmark);
+        if (dest == 0)
+        {
+            var action = Native.FPDFBookmark_GetAction(bookmark);
+            if (action != 0 && Native.FPDFAction_GetType(action) == ActionGoTo) dest = Native.FPDFAction_GetDest(handle, action);
+        }
+        return dest == 0 ? -1 : Native.FPDFDest_GetDestPageIndex(handle, dest);
+    }
+
+    nint LoadPage(int index)
+    {
+        ObjectDisposedException.ThrowIf(handle == 0, this);
+        var page = Native.FPDF_LoadPage(handle, index);
+        return page == 0 ? throw new PdfException(PdfException.PageError) : page;
+    }
+
+    public void Dispose()
+    {
+        if (handle == 0) return;
+        Native.FPDF_CloseDocument(handle);
+        handle = 0;
+    }
+}

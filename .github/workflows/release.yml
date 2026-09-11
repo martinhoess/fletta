@@ -1,0 +1,52 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    # windows-2025 bringt .NET-10-SDK und Inno Setup 6.7 mit.
+    runs-on: windows-2025
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Version
+        id: ver
+        # Eine Stelle: <Version> im csproj. Ein Tag muss dazu passen, sonst trügen EXE und Setup verschiedene Nummern.
+        run: |
+          $v = ([xml](Get-Content src/Fletta.csproj)).Project.PropertyGroup.Version | Where-Object { $_ } | Select-Object -First 1
+          if ($v -notmatch '^\d+\.\d+\.\d+$') { throw "Version '$v' ist nicht x.y.z (Inno braucht Zahlen)" }
+          if ($env:GITHUB_REF_TYPE -eq 'tag' -and $env:GITHUB_REF_NAME -ne "v$v") { throw "Tag $env:GITHUB_REF_NAME passt nicht zu <Version>$v" }
+          "version=$v" >> $env:GITHUB_OUTPUT
+
+      # Lädt PDFium selbst (Target FetchPdfium im csproj).
+      - name: Publish (self-contained)
+        run: dotnet publish src/Fletta.csproj -c Release --self-contained -o publish --nologo
+
+      - name: Selbsttest
+        run: |
+          $p = Start-Process publish\Fletta.exe -ArgumentList '--selftest' -Wait -PassThru -NoNewWindow -RedirectStandardError selftest.log
+          Get-Content selftest.log
+          if ($p.ExitCode -ne 0) { throw "--selftest: $($p.ExitCode) Fehler" }
+
+      - name: Setup
+        run: '& "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" /DAppVersion=${{ steps.ver.outputs.version }} installer\fletta.iss'
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: setup
+          path: dist/*.exe
+
+      - name: Release
+        if: github.ref_type == 'tag'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create $env:GITHUB_REF_NAME (Get-Item dist\*.exe).FullName --title $env:GITHUB_REF_NAME --generate-notes

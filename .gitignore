@@ -1,0 +1,10 @@
+bin/
+obj/
+*.user
+
+# PDFium lädt der Build selbst herunter (Tag und SHA-256 in src/Fletta.csproj).
+lib/
+
+# Erzeugt von der Release-CI.
+publish/
+dist/
