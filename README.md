@@ -3,10 +3,7 @@
 *fletta* ist isländisch für „blättern“. Schneller PDF-Betrachter für Windows. Ein Fenster pro PDF, Miniaturen, Zoom, Drehen mit
 `R`/`L` (nur in der Ansicht, die Datei bleibt unverändert), Drucken, Seite kopieren.
 
-`Strg+P` öffnet den modernen Windows-Druckdialog samt echter Vorschau. Jede Seite geht als
-Rasterbild in 300 dpi in den druckbaren Bereich, mit der Drehung, die gerade angezeigt wird —
-Text im Ausdruck ist also Bild, nicht auswählbar. Sind mehrere Miniaturen markiert, stehen sie
-als Seitenbereiche schon im Dialog.
+<img height="500" alt="image" src="https://github.com/user-attachments/assets/c97593a5-b6a1-4453-9a34-cfe2773217ac" />
 
 ## Technik
 
