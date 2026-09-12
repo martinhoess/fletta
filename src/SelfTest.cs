@@ -155,6 +155,14 @@ static class SelfTest
         failures += Check("Druckbereich 3–5 von 10", PagePrinter.PagesFor(3, 5, 10).SequenceEqual([2, 3, 4]));
         failures += Check("Druckbereich über das Ende begrenzt", PagePrinter.PagesFor(0, 99, 10).SequenceEqual(Enumerable.Range(0, 10)));
         failures += Check("Druckbereich rückwärts ergibt die Startseite", PagePrinter.PagesFor(7, 2, 10).SequenceEqual([6]));
+        // Windows-Druckdialog: Seite 0 hoch und mit R gedreht, Seite 1 quer. Aufs Hochblatt: eine Vierteldrehung
+        // zurück, also Seite 0 wieder aufrecht (nicht auf dem Kopf), Seite 1 gegen den Uhrzeigersinn.
+        var printJob = new PrintJob(null!, [new Size(595, 842), new Size(842, 595)], [1, 0], "Test", [], _ => { });
+        failures += Check("Druck: Drehung aufs Blatt", printJob.TurnsFor(0, sheetIsLandscape: false) == 0
+            && printJob.TurnsFor(1, sheetIsLandscape: false) == 3 && printJob.TurnsFor(1, sheetIsLandscape: true) == 0);
+        // Markierte Miniaturen 0,1,2 und 5 (0-basiert) werden im Dialog zu „1-3“ und „6“.
+        failures += Check("Druck: markierte Seiten als Läufe",
+            PrintJob.RunsOf([0, 1, 2, 5]).SequenceEqual([(1, 3), (6, 6)]) && PrintJob.RunsOf([]).Length == 0);
 
         failures += Check("Zoom hoch von 100", PageLayout.NextZoom(100, +1) == 110);
         failures += Check("Zoom runter von 100", PageLayout.NextZoom(100, -1) == 90);

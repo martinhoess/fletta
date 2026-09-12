@@ -3,8 +3,10 @@
 *fletta* ist isländisch für „blättern“. Schneller PDF-Betrachter für Windows. Ein Fenster pro PDF, Miniaturen, Zoom, Drehen mit
 `R`/`L` (nur in der Ansicht, die Datei bleibt unverändert), Drucken, Seite kopieren.
 
-Gedruckt wird über die Windows-Druckausgabe: PDFium zeichnet direkt auf den Drucker
-(`FPDF_RenderPage` mit `FPDF_PRINTING`), jede Seite eingepasst in den druckbaren Bereich.
+`Strg+P` öffnet den modernen Windows-Druckdialog samt echter Vorschau. Jede Seite geht als
+Rasterbild in 300 dpi in den druckbaren Bereich, mit der Drehung, die gerade angezeigt wird —
+Text im Ausdruck ist also Bild, nicht auswählbar. Sind mehrere Miniaturen markiert, stehen sie
+als Seitenbereiche schon im Dialog.
 
 ## Technik
 
@@ -14,6 +16,10 @@ Gedruckt wird über die Windows-Druckausgabe: PDFium zeichnet direkt auf den Dru
   `LibraryImport`, ohne Wrapper-Bibliothek.
 - Der Build lädt `pdfium-win-x64.tgz` selbst nach `lib/` und prüft den SHA-256 gegen
   `src/Fletta.csproj`. Die Lizenztexte von PDFium landen unter `licenses/` neben der EXE.
+- Der Druckdialog kommt aus `Windows.Graphics.Printing` (deshalb das Zielframework
+  `net10.0-windows10.0.19041.0`); Vorschau und Ausgabe zeichnen über Direct3D und Direct2D,
+  angebunden mit [Vortice.Windows](https://github.com/amerkoleci/Vortice.Windows). Geladen wird
+  das alles erst beim ersten `Strg+P`.
 
 ## Bauen und prüfen
 
@@ -47,7 +53,7 @@ Fletta.exe --measure datei   öffnet, rendert, schreibt die Zeitmarken auf stder
 | linke Maustaste halten und ziehen | Ansicht verschieben |
 | F1 oder `?` | Übersicht der Tastenkürzel |
 | Strg+O | öffnen |
-| Strg+P | drucken (Windows-Druckdialog: alle, aktuelle, markierte Seiten oder Bereich; Drehung wie angezeigt) |
+| Strg+P | drucken (Windows-Druckdialog mit Vorschau: alle Seiten oder Bereiche, markierte Miniaturen vorbelegt) |
 | Strg+C | aktuelle Seite als Bild (200 dpi) und Text in die Zwischenablage |
 | Strg+Umschalt+C | nur den Text der aktuellen Seite |
 | Esc | Mehrfachauswahl aufheben, sonst Fenster schließen |

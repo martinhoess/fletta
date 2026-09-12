@@ -20,7 +20,7 @@ public partial class ThumbnailPanel : UserControl
     const double HorizontalChrome = 1 + 12 + 12 + 20, LabelHeight = 22, CardChrome = 20;
     const double MinBox = 40;
     const int Prefetch = 6;      // so viele Einträge über und unter dem Sichtbaren werden vorab gerendert
-    const int KeepRendered = 24; // darüber hinaus werden Bilder verworfen
+    const int KeepRendered = 8;  // darüber hinaus werden Bilder verworfen; muss über Prefetch liegen
 
     // Ein Feld, auf einmal übergeben: 990 einzelne Add-Aufrufe an einer ObservableCollection kosteten
     // die ListBox vor dem ersten Bild rund eine Sekunde (gemessen 2026-09-10). Einzeln hinzu kommt nie etwas.
@@ -38,7 +38,12 @@ public partial class ThumbnailPanel : UserControl
         InitializeComponent();
         SizeChanged += (_, _) => Resize();
         // Ausgeblendet (F4) oder Reiter „Gliederung“ vorn: nichts bestellen; beim Einblenden neu.
-        IsVisibleChanged += (_, _) => WantedChanged?.Invoke();
+        IsVisibleChanged += (_, _) =>
+        {
+            // Ausgeblendete Miniaturen sind nur Ballast im Speicher; beim Einblenden kommen sie neu.
+            if (!IsVisible) foreach (var item in items) if (item.Bitmap is not null) item.Drop();
+            WantedChanged?.Invoke();
+        };
         // Beim Ziehen am Rand werden die alten Bilder gestreckt; neu gerendert wird erst, wenn es ruht.
         resizeSettled.Tick += (_, _) =>
         {

@@ -2,7 +2,8 @@
 
   <PropertyGroup>
     <OutputType>WinExe</OutputType>
-    <TargetFramework>net10.0-windows</TargetFramework>
+    <!-- 19041: bringt die WinRT-Projektion für Windows.Graphics.Printing (PrintManager, Druckvorschau). -->
+    <TargetFramework>net10.0-windows10.0.19041.0</TargetFramework>
     <UseWPF>true</UseWPF>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
@@ -10,7 +11,7 @@
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <AssemblyName>Fletta</AssemblyName>
     <RootNamespace>Fletta</RootNamespace>
-    <Version>0.9.1</Version>
+    <Version>0.10.0</Version>
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <ApplicationIcon>fletta.ico</ApplicationIcon>
     <!-- pdfium.dll gibt es hier nur für x64. -->
@@ -22,6 +23,12 @@
 
   <ItemGroup>
     <Resource Include="fletta.ico" />
+  </ItemGroup>
+
+  <!-- Nur für den Druckweg: Direct3D für die Vorschaufläche, Direct2D und WIC für die Ausgabe. -->
+  <ItemGroup>
+    <PackageReference Include="Vortice.Direct3D11" Version="3.8.3" />
+    <PackageReference Include="Vortice.Direct2D1" Version="3.8.3" />
   </ItemGroup>
 
   <!-- PDFium aus bblanchon/pdfium-binaries. Tag und SHA-256 ziehen immer zusammen um. -->

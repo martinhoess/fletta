@@ -1,7 +1,6 @@
 using System.ComponentModel;
 using System.Diagnostics;
 using System.IO;
-using System.Printing.Interop;
 using System.Runtime.InteropServices;
 using System.Windows;
 using System.Windows.Controls;
@@ -93,6 +92,8 @@ public partial class MainWindow : Window
     bool paged;            // S: seitenweise blättern
     long flipLockedUntil;  // seitenweise: schluckt den Nachlauf von Touchpads (Environment.TickCount64)
     string fileName = "";
+    int printing;          // laufende Druckdialoge/-aufträge; solange bleibt der Renderer stehen
+    bool closeAfterPrint;  // Fenster wurde während des Drucks geschlossen und ist nur versteckt
     DpiScale dpi = new(1, 1);
     readonly DispatcherTimer noticeTimer = new() { Interval = TimeSpan.FromSeconds(3) };
 
@@ -388,6 +389,7 @@ public partial class MainWindow : Window
         foreach (var page in slots.Keys.Where(p => p < first || p > last).ToList())
         {
             slots[page].Frame.Visibility = Visibility.Collapsed;
+            slots[page].Image.Source = null; // sonst hält der Vorrat die Bitmap fest, auch wenn rendered sie vergessen hat
             spareSlots.Push(slots[page]);
             slots.Remove(page);
         }
@@ -606,42 +608,27 @@ public partial class MainWindow : Window
         ZoomMenuItems.Children.Add(item);
     }
 
-    /// <summary>Strg+P: Windows-Druckdialog, gedruckt wird auf dem Render-Thread, Drehung wie angezeigt.</summary>
+    /// <summary>Strg+P: moderner Windows-Druckdialog mit echter Vorschau; PDFium rendert auf dem Render-Thread.</summary>
     async void Print()
     {
         if (layout is null || renderer is null) return;
+        // Eine einzelne markierte Miniatur ist nur der Klickfokus, erst ab zwei ist es eine Auswahl.
         var selected = Thumbs.SelectedPages;
-        var dialog = new PrintDialog
-        {
-            MinPage = 1,
-            MaxPage = (uint)pagesPt.Count,
-            PageRange = new PageRange(1, pagesPt.Count),
-            UserPageRangeEnabled = true,
-            CurrentPageEnabled = true,
-            SelectedPagesEnabled = selected.Length > 1,
-        };
-        if (dialog.ShowDialog() != true) return;
-        int[] pages = dialog.PageRangeSelection switch
-        {
-            PageRangeSelection.CurrentPage => [currentPage],
-            PageRangeSelection.SelectedPages => selected,
-            PageRangeSelection.UserPages => PagePrinter.PagesFor(dialog.PageRange.PageFrom, dialog.PageRange.PageTo, pagesPt.Count),
-            _ => [.. Enumerable.Range(0, pagesPt.Count)],
-        };
-        var turns = (int[])quarterTurns.Clone(); // Stand beim Klick, auch wenn danach gedreht wird
-        var printer = dialog.PrintQueue.FullName;
-        var copies = (short)Math.Clamp(dialog.PrintTicket.CopyCount ?? 1, 1, short.MaxValue);
-        var devMode = DevModeFor(dialog);
-        var name = fileName;
-        ShowNotice($"Druckt {PageCountText(pages.Length)} …");
+        var job = new PrintJob(renderer, pagesPt, (int[])quarterTurns.Clone(), fileName,
+                               selected.Length > 1 ? PrintJob.RunsOf(selected) : [], ShowNotice); // Stand beim Klick
+        var hwnd = new System.Windows.Interop.WindowInteropHelper(this).Handle;
+        printing++;
         try
         {
-            await renderer.Invoke(document => PagePrinter.Print(document, pages, turns, printer, copies, name, devMode: devMode));
-            ShowNotice($"{PageCountText(pages.Length)} an „{printer}“ gesendet");
+            await SystemPrint.ShowAsync(hwnd, job);
         }
         catch (Exception e) // Drucker sind Fremdgeräte: jeder Fehler wird Meldung, nie Absturz
         {
             ShowNotice($"Drucken fehlgeschlagen: {e.Message}");
+        }
+        finally
+        {
+            if (--printing == 0 && closeAfterPrint) Close(); // das Schließen war nur aufgeschoben
         }
     }
 
@@ -680,26 +667,6 @@ public partial class MainWindow : Window
             ShowNotice($"Kopieren fehlgeschlagen: {e.Message}");
         }
     }
-
-    /// <summary>
-    /// Die Wahl aus dem Dialog (beidseitig, Papier, Schacht, Graustufen) als DEVMODE für PrintDocument —
-    /// sonst druckte es mit den Vorgaben des Treibers. Kein PDFium-Aufruf, darf auf den UI-Thread.
-    /// Kann der Treiber das Ticket nicht umwandeln, wird mit seinen Vorgaben gedruckt.
-    /// </summary>
-    static byte[]? DevModeFor(PrintDialog dialog)
-    {
-        try
-        {
-            using var converter = new PrintTicketConverter(dialog.PrintQueue.FullName, PrintTicketConverter.MaxPrintSchemaVersion);
-            return converter.ConvertPrintTicketToDevMode(dialog.PrintTicket, BaseDevModeType.UserDefault);
-        }
-        catch (Exception) // Treiberfehler jeder Art: dann eben Standardwerte, der Druck geht trotzdem raus
-        {
-            return null;
-        }
-    }
-
-    static string PageCountText(int count) => count == 1 ? "1 Seite" : $"{count} Seiten";
 
     void ShowNotice(string text)
     {
@@ -952,6 +919,9 @@ public partial class MainWindow : Window
     protected override void OnClosing(CancelEventArgs e)
     {
         SaveSettings();
+        // Ein laufender Druck holt seine Seiten noch vom Renderer; das Fenster verschwindet nur
+        // und wird geschlossen, sobald der Auftrag durch ist.
+        if (printing > 0) { e.Cancel = closeAfterPrint = true; Hide(); }
         base.OnClosing(e);
     }
 
