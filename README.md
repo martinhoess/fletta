@@ -72,6 +72,10 @@ powershell -ExecutionPolicy Bypass -File tools\install.ps1   # Publish nach %LOC
 Danach öffnet sich „Standard-Apps“: dort `.pdf` auf Fletta stellen — den Standard darf unter
 Windows nur der Benutzer setzen. Abmelden: `Fletta.exe --unregister`.
 
+Updates: Fletta fragt höchstens einmal am Tag bei GitHub nach der neuesten Version. Gibt es eine,
+steht oben rechts „Aktualisieren“. Der Knopf lädt das Setup, prüft es gegen die SHA-256-Summe aus
+dem Release und installiert es. Offene Fenster gehen dabei zu und kommen mit ihrer PDF wieder.
+
 Fletta merkt sich Fensterlage, Seitenleiste, Zoommodus, Doppelseite und seitenweises Blättern
 unter `%APPDATA%\Fletta\settings.json`.
 

@@ -1,6 +1,7 @@
 using System.ComponentModel;
 using System.Diagnostics;
 using System.IO;
+using System.Net.Http;
 using System.Runtime.InteropServices;
 using System.Windows;
 using System.Windows.Controls;
@@ -95,6 +96,7 @@ public partial class MainWindow : Window
     long flipLockedUntil;  // seitenweise: schluckt den Nachlauf von Touchpads (Environment.TickCount64)
     string fileName = "";
     int printing;          // laufende Druckdialoge/-aufträge; solange bleibt der Renderer stehen
+    Release? update;       // neuere Version auf GitHub, sobald CheckForUpdate eine gefunden hat
     bool closeAfterPrint;  // Fenster wurde während des Drucks geschlossen und ist nur versteckt
     DpiScale dpi = new(1, 1);
     readonly DispatcherTimer noticeTimer = new() { Interval = TimeSpan.FromSeconds(3) };
@@ -137,9 +139,66 @@ public partial class MainWindow : Window
         else
         {
             ShowMessage("PDF hierher ziehen oder mit Strg+O öffnen", "Jede Datei öffnet in einem eigenen Fenster.");
+            App.RegisterRestart(null);
             FinishMeasure();
         }
+        if (!measure) CheckForUpdate();
     }
+
+    /// <summary>Neuere Version auf GitHub? Dann bleibt oben rechts ein Hinweis mit Knopf stehen; sonst passiert nichts.</summary>
+    async void CheckForUpdate()
+    {
+        update = await Updater.FindNewerAsync();
+        if (update is null) return;
+        UpdateText.Text = $"Fletta {update.Version} ist da";
+        UpdatePill.Visibility = Visibility.Visible;
+    }
+
+    async void OnUpdateClick(object sender, RoutedEventArgs e)
+    {
+        if (update is null || PrintRunningAnywhere()) return;
+        UpdateButton.IsEnabled = UpdateCloseButton.IsEnabled = false;
+        UpdateText.Text = $"Fletta {update.Version} wird geladen …";
+        try
+        {
+            var setup = await Updater.DownloadAsync(update);
+            if (PrintRunningAnywhere()) // während des Ladens gestartet
+            {
+                UpdateButton.IsEnabled = UpdateCloseButton.IsEnabled = true;
+                UpdateText.Text = $"Fletta {update.Version} ist da";
+                return;
+            }
+            UpdateText.Text = "Fletta wird aktualisiert …";
+            // Das Setup schließt alle Fletta-Fenster aus seinem Ordner und öffnet sie danach wieder. Bleibt
+            // dieses hier offen (anderer Ordner, Setup gescheitert), sagt der Hinweis, was passiert ist.
+            var exitCode = await Updater.InstallAsync(setup);
+            UpdateText.Text = exitCode == 0 ? $"Fletta {update.Version} installiert – bitte neu starten" : $"Setup mit Code {exitCode} beendet";
+            UpdateButton.Visibility = Visibility.Collapsed;
+            UpdateCloseButton.IsEnabled = true;
+        }
+        catch (Exception ex) when (ex is HttpRequestException or OperationCanceledException or IOException or UnauthorizedAccessException or InvalidDataException or Win32Exception)
+        {
+            UpdateText.Text = $"Update fehlgeschlagen: {ex.Message}";
+            UpdateButton.Content = "Erneut";
+            UpdateButton.IsEnabled = UpdateCloseButton.IsEnabled = true;
+        }
+    }
+
+    void OnUpdateCloseClick(object sender, RoutedEventArgs e) => UpdatePill.Visibility = Visibility.Collapsed;
+
+    /// <summary>
+    /// Druckt irgendein Fletta-Fenster? Jede PDF ist ein eigener Prozess, und das Setup schließt alle —
+    /// ein laufender Auftrag bräche ab. Solange gedruckt wird, hält Print ein benanntes Ereignis offen.
+    /// </summary>
+    bool PrintRunningAnywhere()
+    {
+        if (!EventWaitHandle.TryOpenExisting(PrintingSignal, out var signal)) return false;
+        signal.Dispose();
+        ShowNotice("Erst nach dem Druck – das Setup schließt alle Fletta-Fenster");
+        return true;
+    }
+
+    const string PrintingSignal = @"Local\Fletta-printing";
 
     async void ShowDocument(string path)
     {
@@ -160,6 +219,7 @@ public partial class MainWindow : Window
         }
         if (renderer != opening) return; // Fenster inzwischen geschlossen
         App.Mark("dokument");
+        App.RegisterRestart(path);
         if (pagesPt.Count == 0)
         {
             CloseDocument();
@@ -660,6 +720,7 @@ public partial class MainWindow : Window
                                selected.Length > 1 ? PrintJob.RunsOf(selected) : [], ShowNotice); // Stand beim Klick
         var hwnd = new System.Windows.Interop.WindowInteropHelper(this).Handle;
         printing++;
+        using var busy = new EventWaitHandle(false, EventResetMode.ManualReset, PrintingSignal); // für PrintRunningAnywhere
         try
         {
             await SystemPrint.ShowAsync(hwnd, job);

@@ -144,6 +144,13 @@ static class SelfTest
         failures += Check("große Seitenbilder: ein Nachbar", MainWindow.NeighboursFor(large, spreads: false) == 1);
         failures += Check("große Seitenbilder, Doppelseite: ganze Nachbarzeile", MainWindow.NeighboursFor(large, spreads: true) == 2);
 
+        // Update: Antwort der GitHub-API, auf das Nötige gekürzt.
+        const string latest = """{"tag_name":"v0.11.0","assets":[{"name":"Fletta-0.11.0.zip","browser_download_url":"https://x/zip","digest":"sha256:00"},{"name":"Fletta-0.11.0-setup.exe","browser_download_url":"https://x/setup","digest":"sha256:ab12"}]}""";
+        failures += Check("Update: Tag und Setup gelesen", Updater.Parse(latest) == new Release(new Version(0, 11, 0), "Fletta-0.11.0-setup.exe", "https://x/setup", "ab12"));
+        failures += Check("Update: ohne Prüfsumme kein Update", Updater.Parse(latest.Replace("sha256:ab12", "")) is null);
+        failures += Check("Update: kaputte Antwort", Updater.Parse("<html>") is null && Updater.Parse("""{"message":"rate limit"}""") is null);
+        failures += Check("Update: laufende Version dreistellig", Updater.Current.Revision == -1 && Updater.Current.Major >= 0);
+
         // Einstellungen: Hin und zurück durch JSON, kaputte Datei, Fenster außerhalb des Bildschirms.
         var saved = new AppSettings { Left = 100, Top = 50, Zoom = ZoomMode.FitPage, ZoomPercent = 150, Spreads = true, SidebarHidden = true };
         failures += Check("Einstellungen überstehen JSON", AppSettings.Parse(saved.ToJson()) == saved);
