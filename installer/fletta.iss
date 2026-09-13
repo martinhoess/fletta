@@ -1,6 +1,6 @@
-; Setup pro Benutzer ohne Adminrechte, Gegenstueck zu tools/install.ps1. Baut die CI (.github/workflows/release.yml):
+; Setup pro Benutzer ohne Adminrechte, Gegenstück zu tools/install.ps1. Baut die CI (.github/workflows/release.yml):
 ;   ISCC.exe /DAppVersion=1.2.3 installer\fletta.iss
-; Erwartet den self-contained Publish in ..\publish. Umlautfrei: Inno liest Dateien ohne BOM als ANSI.
+; Erwartet den self-contained Publish in ..\publish. UTF-8 ohne BOM liest Inno erst ab 6.3 (die CI hat 6.7).
 
 #define AppName    "Fletta"
 #define AppExeName AppName + ".exe"
@@ -9,7 +9,7 @@
 #endif
 
 [Setup]
-; Feste Kennung: bleibt, auch wenn sich der Name aendert - sonst gilt ein Update als zweites Programm.
+; Feste Kennung: bleibt, auch wenn sich der Name ändert - sonst gilt ein Update als zweites Programm.
 AppId={{6D0B1E6C-2C4B-4D4E-9B7A-3F5E0C1A87D2}
 AppName={#AppName}
 AppVersion={#AppVersion}
@@ -21,11 +21,11 @@ PrivilegesRequired=lowest
 DefaultDirName={localappdata}\Programs\{#AppName}
 DisableDirPage=yes
 DisableProgramGroupPage=yes
-; pdfium.dll gibt es nur fuer x64.
+; pdfium.dll gibt es nur für x64.
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 MinVersion=10.0
-; Laufende Fenster beendet der Restart Manager ueber die gesperrte EXE, beim Installieren wie beim Entfernen.
+; Laufende Fenster beendet der Restart Manager über die gesperrte EXE, beim Installieren wie beim Entfernen.
 CloseApplications=force
 RestartApplications=no
 ChangesAssociations=yes
@@ -42,7 +42,7 @@ Name: "de"; MessagesFile: "compiler:Languages\German.isl"
 
 [CustomMessages]
 en.OpenDefaultApps=Open Default apps (set .pdf to {#AppName} there)
-de.OpenDefaultApps=Standard-Apps oeffnen (dort .pdf auf {#AppName} stellen)
+de.OpenDefaultApps=Standard-Apps öffnen (dort .pdf auf {#AppName} stellen)
 
 [Tasks]
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked
@@ -64,6 +64,6 @@ Filename: "{app}\{#AppExeName}"; Description: "{cm:LaunchProgram,{#AppName}}"; F
 [UninstallRun]
 ; CloseApplications greift nur beim Installieren: offene Fenster aus diesem Ordner sonst sperren die EXE,
 ; und der Ordner bliebe nach dem Entfernen liegen (auf der Test-VM so passiert). ponytail: trifft jede Fletta.exe,
-; auch aus einem anderen Ordner; Pfadfilter erst, wenn das stoert (Apostroph im Profilpfad bricht PowerShell-Quoting).
+; auch aus einem anderen Ordner; Pfadfilter erst, wenn das stört (Apostroph im Profilpfad bricht PowerShell-Quoting).
 Filename: "{sys}\taskkill.exe"; Parameters: "/F /IM {#AppExeName}"; RunOnceId: "CloseApp"; Flags: runhidden waituntilterminated
 Filename: "{app}\{#AppExeName}"; Parameters: "--unregister"; RunOnceId: "UnregisterPdf"; Flags: runhidden waituntilterminated
