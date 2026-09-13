@@ -99,6 +99,53 @@ internal static partial class Native
     [LibraryImport(Dll)]
     internal static partial int FPDFDest_GetDestPageIndex(nint document, nint dest);
 
+    // fpdf_edit.h, fpdf_ppo.h, fpdf_save.h, fpdf_signature.h — Seiten bearbeiten und speichern
+
+    /// <summary>
+    /// FPDF_FILEWRITE (Version 1). PDFium kennt nur die ersten beiden Felder; State dahinter trägt den
+    /// GCHandle des Ziel-Streams, den WriteBlock über den self-Zeiger wiederfindet.
+    /// </summary>
+    [StructLayout(LayoutKind.Sequential)]
+    internal unsafe struct FileWrite
+    {
+        public int Version;
+        public delegate* unmanaged<FileWrite*, byte*, uint, int> WriteBlock;
+        public nint State;
+    }
+
+    internal const uint SaveNoIncremental = 2; // FPDF_NO_INCREMENTAL
+
+    /// <summary>0–3 im Uhrzeigersinn, −1 bei Fehler.</summary>
+    [LibraryImport(Dll)]
+    internal static partial int FPDFPage_GetRotation(nint page);
+
+    [LibraryImport(Dll)]
+    internal static partial void FPDFPage_SetRotation(nint page, int rotate);
+
+    [LibraryImport(Dll)]
+    internal static partial void FPDFPage_Delete(nint document, int pageIndex);
+
+    /// <summary>Experimentell. destPageIndex zählt im Ergebnis, also nach dem Herausnehmen der Seiten.</summary>
+    [LibraryImport(Dll)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static unsafe partial bool FPDF_MovePages(nint document, int* pageIndices, uint length, int destPageIndex);
+
+    [LibraryImport(Dll)]
+    internal static partial nint FPDF_CreateNewDocument();
+
+    /// <summary>pageIndices null importiert alle Seiten.</summary>
+    [LibraryImport(Dll)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static unsafe partial bool FPDF_ImportPagesByIndex(nint destDocument, nint sourceDocument, int* pageIndices, uint length, int index);
+
+    [LibraryImport(Dll)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static unsafe partial bool FPDF_SaveAsCopy(nint document, FileWrite* fileWrite, uint flags);
+
+    /// <summary>Experimentell; −1 bei Fehler.</summary>
+    [LibraryImport(Dll)]
+    internal static partial int FPDF_GetSignatureCount(nint document);
+
     // fpdf_text.h
     [LibraryImport(Dll)]
     internal static partial nint FPDFText_LoadPage(nint page);

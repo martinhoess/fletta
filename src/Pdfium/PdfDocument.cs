@@ -1,3 +1,4 @@
+using System.IO;
 using System.Runtime.InteropServices;
 using System.Text;
 using System.Windows;
@@ -21,13 +22,20 @@ public sealed class PdfDocument : IDisposable
 
     nint handle;
 
-    PdfDocument(nint handle)
+    PdfDocument(nint handle) => this.handle = handle;
+
+    /// <summary>Ändert sich mit DeletePages und InsertFrom.</summary>
+    public int PageCount
     {
-        this.handle = handle;
-        PageCount = Native.FPDF_GetPageCount(handle);
+        get
+        {
+            ObjectDisposedException.ThrowIf(handle == 0, this);
+            return Native.FPDF_GetPageCount(handle);
+        }
     }
 
-    public int PageCount { get; }
+    /// <summary>Digitale Signaturen im Dokument; Speichern macht sie ungültig.</summary>
+    public int SignatureCount => Math.Max(0, Native.FPDF_GetSignatureCount(handle));
 
     /// <summary>Liest nur Querverweistabelle und Seitenbaum, keine Seiteninhalte.</summary>
     public static PdfDocument Open(string path)
@@ -154,6 +162,121 @@ public sealed class PdfDocument : IDisposable
             if (action != 0 && Native.FPDFAction_GetType(action) == ActionGoTo) dest = Native.FPDFAction_GetDest(handle, action);
         }
         return dest == 0 ? -1 : Native.FPDFDest_GetDestPageIndex(handle, dest);
+    }
+
+    /// <summary>Dreht die Seite in der Datei (/Rotate) um quarterTurns Viertel im Uhrzeigersinn weiter.</summary>
+    public void Rotate(int index, int quarterTurns) => RotatePage(handle, index, quarterTurns);
+
+    /// <summary>Löscht die Seiten; Reihenfolge der Angabe egal.</summary>
+    public void DeletePages(IEnumerable<int> pages)
+    {
+        ObjectDisposedException.ThrowIf(handle == 0, this);
+        foreach (var page in pages.Distinct().OrderDescending()) Native.FPDFPage_Delete(handle, page);
+    }
+
+    /// <summary>Setzt die Seiten in dieser Reihenfolge an destination — gezählt im Ergebnis, nach dem Herausnehmen.</summary>
+    public unsafe void MovePages(int[] pages, int destination)
+    {
+        ObjectDisposedException.ThrowIf(handle == 0, this);
+        fixed (int* indices = pages)
+            if (!Native.FPDF_MovePages(handle, indices, (uint)pages.Length, destination))
+                throw new PdfException(PdfException.EditError);
+    }
+
+    /// <summary>Fügt alle Seiten einer anderen PDF vor Seite at ein; gibt ihre Zahl zurück.</summary>
+    public unsafe int InsertFrom(string path, int at)
+    {
+        ObjectDisposedException.ThrowIf(handle == 0, this);
+        using var source = Open(path);
+        var count = source.PageCount;
+        if (!Native.FPDF_ImportPagesByIndex(handle, source.handle, null, 0, at)) throw new PdfException(PdfException.EditError);
+        return count;
+    }
+
+    /// <summary>
+    /// Schreibt das Dokument samt allen Änderungen vollständig neu nach path. Nicht inkrementell: sonst
+    /// stünden gelöschte Seiten weiter lesbar in der Datei.
+    /// </summary>
+    public void SaveAs(string path)
+    {
+        ObjectDisposedException.ThrowIf(handle == 0, this);
+        Save(handle, path);
+    }
+
+    /// <summary>Legt die Seiten als neue PDF an, jede um turns[i] Viertel gedreht wie in der Ansicht.</summary>
+    public unsafe void ExportPages(int[] pages, int[] turns, string path)
+    {
+        ObjectDisposedException.ThrowIf(handle == 0, this);
+        // fixed auf ein leeres Feld ergibt null, und null heißt für PDFium „alle Seiten“.
+        ArgumentOutOfRangeException.ThrowIfZero(pages.Length);
+        var target = Native.FPDF_CreateNewDocument();
+        if (target == 0) throw new PdfException(PdfException.EditError);
+        try
+        {
+            fixed (int* indices = pages)
+                if (!Native.FPDF_ImportPagesByIndex(target, handle, indices, (uint)pages.Length, 0))
+                    throw new PdfException(PdfException.EditError);
+            for (var i = 0; i < pages.Length; i++)
+                if (turns[i] % 4 != 0) RotatePage(target, i, turns[i]);
+            Save(target, path);
+        }
+        finally
+        {
+            Native.FPDF_CloseDocument(target);
+        }
+    }
+
+    static void RotatePage(nint document, int index, int quarterTurns)
+    {
+        var page = Native.FPDF_LoadPage(document, index);
+        if (page == 0) throw new PdfException(PdfException.PageError);
+        try { Native.FPDFPage_SetRotation(page, (Math.Max(0, Native.FPDFPage_GetRotation(page)) + quarterTurns % 4 + 4) % 4); }
+        finally { Native.FPDF_ClosePage(page); }
+    }
+
+    /// <summary>
+    /// Erst vollständig in eine Temp-Datei daneben, dann an den Platz: bricht das Schreiben unterwegs ab
+    /// (Platte voll, NAS weg), bleibt eine vorhandene Datei unter path heil.
+    /// </summary>
+    static unsafe void Save(nint document, string path)
+    {
+        var temp = Path.Combine(Path.GetDirectoryName(Path.GetFullPath(path))!, $".{Path.GetFileName(path)}.{Guid.NewGuid():N}.tmp");
+        try
+        {
+            using (var stream = File.Create(temp))
+            {
+                var target = GCHandle.Alloc(stream);
+                try
+                {
+                    var writer = new Native.FileWrite { Version = 1, WriteBlock = &WriteBlock, State = GCHandle.ToIntPtr(target) };
+                    if (!Native.FPDF_SaveAsCopy(document, &writer, Native.SaveNoIncremental)) throw new PdfException(PdfException.EditError);
+                }
+                finally
+                {
+                    target.Free();
+                }
+            }
+            File.Move(temp, path, overwrite: true);
+        }
+        finally
+        {
+            if (File.Exists(temp)) File.Delete(temp);
+        }
+    }
+
+    /// <summary>Rückruf aus PDFium: keine Ausnahme darf hier hinaus, ein Fehler heißt 0.</summary>
+    [UnmanagedCallersOnly]
+    static unsafe int WriteBlock(Native.FileWrite* self, byte* data, uint size)
+    {
+        try
+        {
+            ((Stream)GCHandle.FromIntPtr(self->State).Target!).Write(new ReadOnlySpan<byte>(data, checked((int)size)));
+            return 1;
+        }
+        catch (Exception)
+        {
+            return 0;
+        }
     }
 
     nint LoadPage(int index)

@@ -31,7 +31,13 @@ public partial class MainWindow : Window
 
     static readonly Shortcut[] Shortcuts =
     [
-        new("R / L", "rechts / links drehen – markierte Miniaturen, sonst die aktuelle Seite (nur Ansicht)"),
+        new("R / L", "rechts / links drehen – markierte Miniaturen, sonst die aktuelle Seite (Ansicht; Strg+S speichert)"),
+        new("Rechtsklick auf Miniaturen", "drehen, löschen, in neue PDF kopieren oder verschieben, PDF einfügen"),
+        new("Miniaturen ziehen", "umsortieren; hinaus in Explorer oder anderes Fenster kopiert (Umschalt: verschiebt)"),
+        new("PDF auf die Miniaturen ziehen", "ihre Seiten an dieser Stelle einfügen"),
+        new("Entf", "markierte Miniaturen löschen, sonst die aktuelle Seite"),
+        new("Strg+Z", "letzte Änderung zurücknehmen"),
+        new("Strg+S", "Änderungen und Drehungen in die Datei speichern"),
         new("+ / −, Strg+Mausrad", "Zoom in Stufen"),
         new("Strg+0 / 1 / 2", "ganze Seite / 100 % / Seitenbreite"),
         new("← / →", "vorige / nächste Seite (bei Doppelseite ein Paar)"),
@@ -97,6 +103,14 @@ public partial class MainWindow : Window
     string fileName = "";
     int printing;          // laufende Druckdialoge/-aufträge; solange bleibt der Renderer stehen
     Release? update;       // neuere Version auf GitHub, sobald CheckForUpdate eine gefunden hat
+    // Seitenänderungen seit dem Öffnen oder Speichern, je mit der Drehung davor — Strg+Z nimmt die letzte zurück.
+    readonly List<(PageEdit Edit, int[] TurnsBefore)> edits = [];
+    string documentPath = "";
+    bool busy;             // Änderung, Rückgängig oder Speichern läuft: keine Aufträge, kein zweiter Eingriff
+    bool closeConfirmed;   // Rückfrage zu ungespeicherten Änderungen ist beantwortet
+    bool droppedInside;    // der eigene Zug endete in der eigenen Leiste: dort schon verschoben
+    EventWaitHandle? unsavedSignal;
+    Button? undoItem, saveItem;
     bool closeAfterPrint;  // Fenster wurde während des Drucks geschlossen und ist nur versteckt
     DpiScale dpi = new(1, 1);
     readonly DispatcherTimer noticeTimer = new() { Interval = TimeSpan.FromSeconds(3) };
@@ -117,6 +131,16 @@ public partial class MainWindow : Window
         };
         Thumbs.PageClicked += GoTo;
         Thumbs.WantedChanged += RequestRenders;
+        Thumbs.MenuRequested += OpenPageMenu;
+        Thumbs.DragRequested += DragPagesOut;
+        Thumbs.PagesDropped += (pages, gap) =>
+        {
+            droppedInside = true;
+            MovePagesTo(pages, gap);
+        };
+        Thumbs.FilesDropped += InsertFiles;
+        Thumbs.CanAcceptDrop = () => renderer is not null && !busy && printing == 0;
+        BuildPageMenu();
         SetDocumentControls(false);
         SourceInitialized += (_, _) =>
         {
@@ -156,13 +180,13 @@ public partial class MainWindow : Window
 
     async void OnUpdateClick(object sender, RoutedEventArgs e)
     {
-        if (update is null || PrintRunningAnywhere()) return;
+        if (update is null || PrintRunningAnywhere() || UnsavedAnywhere()) return;
         UpdateButton.IsEnabled = UpdateCloseButton.IsEnabled = false;
         UpdateText.Text = $"Fletta {update.Version} wird geladen …";
         try
         {
             var setup = await Updater.DownloadAsync(update);
-            if (PrintRunningAnywhere()) // während des Ladens gestartet
+            if (PrintRunningAnywhere() || UnsavedAnywhere()) // während des Ladens begonnen
             {
                 UpdateButton.IsEnabled = UpdateCloseButton.IsEnabled = true;
                 UpdateText.Text = $"Fletta {update.Version} ist da";
@@ -190,19 +214,42 @@ public partial class MainWindow : Window
     /// Druckt irgendein Fletta-Fenster? Jede PDF ist ein eigener Prozess, und das Setup schließt alle —
     /// ein laufender Auftrag bräche ab. Solange gedruckt wird, hält Print ein benanntes Ereignis offen.
     /// </summary>
-    bool PrintRunningAnywhere()
+    bool PrintRunningAnywhere() => SignalBlocks(PrintingSignal, "Erst nach dem Druck – das Setup schließt alle Fletta-Fenster");
+
+    /// <summary>Hat irgendein Fletta-Fenster ungespeicherte Änderungen? Dann nicht aktualisieren, das Setup schlösse es hart.</summary>
+    bool UnsavedAnywhere() => SignalBlocks(UnsavedSignal, "Erst speichern (Strg+S) oder Änderungen zurücknehmen – das Setup schließt alle Fletta-Fenster");
+
+    bool SignalBlocks(string name, string notice)
     {
-        if (!EventWaitHandle.TryOpenExisting(PrintingSignal, out var signal)) return false;
+        if (!EventWaitHandle.TryOpenExisting(name, out var signal)) return false;
         signal.Dispose();
-        ShowNotice("Erst nach dem Druck – das Setup schließt alle Fletta-Fenster");
+        ShowNotice(notice);
         return true;
     }
 
     const string PrintingSignal = @"Local\Fletta-printing";
+    const string UnsavedSignal = @"Local\Fletta-unsaved"; // offen, solange ein Fenster ungespeicherte Änderungen hat
+
+    /// <summary>Für App.OnSessionEnding: Abmelden oder Herunterfahren soll die Änderungen nicht stillschweigend verwerfen.</summary>
+    public bool HasUnsavedEdits => edits.Count > 0;
+
+    /// <summary>Nach jeder Änderung an edits: Titel und prozessübergreifendes Signal nachführen.</summary>
+    void EditsChanged()
+    {
+        if (edits.Count > 0) unsavedSignal ??= new EventWaitHandle(false, EventResetMode.ManualReset, UnsavedSignal);
+        else
+        {
+            unsavedSignal?.Dispose();
+            unsavedSignal = null;
+        }
+        titlePage = -1;
+        if (layout is not null) SetCurrentPage(currentPage);
+    }
 
     async void ShowDocument(string path)
     {
         var opening = renderer!;
+        documentPath = Path.GetFullPath(path);
         fileName = Path.GetFileName(path);
         Title = $"{fileName} – Fletta";
         ShowLoadingAfterDelay(opening);
@@ -246,6 +293,8 @@ public partial class MainWindow : Window
     {
         renderer?.Dispose();
         renderer = null;
+        edits.Clear();
+        EditsChanged();
         layout = null;
         pagesPt = [];
         quarterTurns = [];
@@ -542,9 +591,12 @@ public partial class MainWindow : Window
     /// dem ersten Ergebnis der Hauptansicht: ihre Wünsche kommen beim ersten Layout früher an und
     /// hielten die erste Seite sonst um eine Miniatur auf.
     /// </summary>
-    void RequestRenders() =>
+    void RequestRenders()
+    {
+        if (busy) return; // Seitennummern der Leiste und der Ansicht passen erst nach ShowPages wieder zum Dokument
         renderer?.Request([.. mainWanted.Where(r => !IsSharp(r) && !pageErrors.ContainsKey(r.Page)),
                            .. outlineRequested ? Thumbs.Wanted() : []]);
+    }
 
     /// <summary>Liegt für die Seite schon ein Bild zu genau diesem Auftrag vor (Größe, DPI, Drehung)?</summary>
     bool IsSharp(RenderRequest wanted) => rendered.TryGetValue(wanted.Page, out var r) && r.Request == wanted;
@@ -629,7 +681,7 @@ public partial class MainWindow : Window
         if (page == titlePage) return;
         titlePage = page;
         Thumbs.SetCurrent(page);
-        Title = $"{fileName} · {page + 1}/{layout!.Count} – Fletta";
+        Title = $"{(edits.Count > 0 ? "● " : "")}{fileName} · {page + 1}/{layout!.Count} – Fletta";
         PageCount.Text = $"/ {layout.Count}";
         if (!PageBox.IsKeyboardFocused) PageBox.Text = (page + 1).ToString();
     }
@@ -655,11 +707,12 @@ public partial class MainWindow : Window
     /// R / L: dreht um 90°, nur in der Ansicht — die Datei bleibt unverändert. Sind mehrere
     /// Miniaturen markiert (Strg/Umschalt-Klick, Strg+A), alle markierten, sonst die aktuelle Seite.
     /// </summary>
-    void Rotate(int quarters)
+    void Rotate(int quarters) => Rotate(quarters, KeyPages);
+
+    void Rotate(int quarters, int[] pages)
     {
-        if (layout is null) return;
-        var selected = Thumbs.SelectedPages;
-        foreach (var page in selected.Length > 1 ? selected : [currentPage])
+        if (layout is null || busy) return;
+        foreach (var page in pages)
         {
             quarterTurns[page] = (quarterTurns[page] + quarters + 4) % 4;
             Thumbs.Refresh(page);
@@ -713,14 +766,14 @@ public partial class MainWindow : Window
     /// <summary>Strg+P: moderner Windows-Druckdialog mit echter Vorschau; PDFium rendert auf dem Render-Thread.</summary>
     async void Print()
     {
-        if (layout is null || renderer is null) return;
+        if (layout is null || renderer is null || busy) return;
         // Eine einzelne markierte Miniatur ist nur der Klickfokus, erst ab zwei ist es eine Auswahl.
         var selected = Thumbs.SelectedPages;
         var job = new PrintJob(renderer, pagesPt, (int[])quarterTurns.Clone(), fileName,
                                selected.Length > 1 ? PrintJob.RunsOf(selected) : [], ShowNotice); // Stand beim Klick
         var hwnd = new System.Windows.Interop.WindowInteropHelper(this).Handle;
         printing++;
-        using var busy = new EventWaitHandle(false, EventResetMode.ManualReset, PrintingSignal); // für PrintRunningAnywhere
+        using var printingSignal = new EventWaitHandle(false, EventResetMode.ManualReset, PrintingSignal); // für PrintRunningAnywhere
         try
         {
             await SystemPrint.ShowAsync(hwnd, job);
@@ -741,7 +794,7 @@ public partial class MainWindow : Window
     /// </summary>
     async void CopyPage(bool textOnly)
     {
-        if (layout is null || renderer is null) return;
+        if (layout is null || renderer is null || busy) return;
         var page = currentPage;
         var turns = quarterTurns[page];
         var shown = ShownSize(page);
@@ -830,8 +883,21 @@ public partial class MainWindow : Window
 
     void OnPageBoxBlur(object sender, KeyboardFocusChangedEventArgs e) => PageBox.Text = (currentPage + 1).ToString();
 
+    /// <summary>
+    /// Auf der Seitenfläche: Dateien öffnen, eigene Miniaturen nicht annehmen. Ohne ausdrückliche Wirkung
+    /// meldete WPF „verschieben“ an die Quelle zurück, und die Seiten verschwänden aus dem Dokument.
+    /// </summary>
+    protected override void OnDragOver(DragEventArgs e)
+    {
+        e.Effects = ThumbnailPanel.OwnPages(e.Data) is null && e.Data.GetDataPresent(DataFormats.FileDrop) ? DragDropEffects.Copy : DragDropEffects.None;
+        e.Handled = true;
+    }
+
     protected override void OnDrop(DragEventArgs e)
     {
+        e.Effects = DragDropEffects.None;
+        if (ThumbnailPanel.OwnPages(e.Data) is not null) return;
+        e.Effects = DragDropEffects.Copy;
         if (e.Data.GetData(DataFormats.FileDrop) is string[] files)
             foreach (var file in files) Open(file);
     }
@@ -851,6 +917,7 @@ public partial class MainWindow : Window
         {
             case Key.Escape when dragging: EndDrag(); break;
             case Key.Escape when ZoomMenu.IsOpen: ZoomMenu.IsOpen = false; break;
+            case Key.Escape when PageMenu.IsOpen: PageMenu.IsOpen = false; break;
             case Key.Escape when HelpOverlay.IsVisible: ToggleHelp(); break;
             case Key.F1 when plain: ToggleHelp(); break;
             case Key.Escape: if (!Thumbs.ClearSelection()) Close(); break; // erst die Mehrfachauswahl
@@ -863,6 +930,9 @@ public partial class MainWindow : Window
             case Key.A when ctrl: Thumbs.SelectAll(); break;
             case Key.O when ctrl: PickFile(); break;
             case Key.P when ctrl: Print(); break;
+            case Key.S when ctrl: _ = Save(); break;
+            case Key.Z when ctrl: Undo(); break;
+            case Key.Delete when plain: DeletePagesCommand(KeyPages); break;
             case Key.C when ctrl: CopyPage(textOnly: false); break;
             case Key.C when ctrlShift: CopyPage(textOnly: true); break;
             case Key.R when plain: Rotate(+1); break;
@@ -1013,6 +1083,411 @@ public partial class MainWindow : Window
         if (!locked) Step(direction);
     }
 
+    /// <summary>Miniaturen-Menü und Maus: markierte Seiten, sonst die aktuelle.</summary>
+    int[] MenuPages => Thumbs.SelectedPages is { Length: > 0 } selected ? selected : [currentPage];
+
+    /// <summary>Tasten (R, L, Entf): eine einzelne markierte Miniatur ist nur der Klickfokus, erst ab zwei zählt die Auswahl.</summary>
+    int[] KeyPages => Thumbs.SelectedPages is { Length: > 1 } selected ? selected : [currentPage];
+
+    void BuildPageMenu()
+    {
+        AddPageItem("Rechts drehen", "R", () => Rotate(+1, MenuPages));
+        AddPageItem("Links drehen", "L", () => Rotate(-1, MenuPages));
+        AddMenuLine();
+        AddPageItem("Löschen", "Entf", () => DeletePagesCommand(MenuPages));
+        AddPageItem("In neue PDF kopieren …", "", () => ExportPages(MenuPages, move: false));
+        AddPageItem("In neue PDF verschieben …", "", () => ExportPages(MenuPages, move: true));
+        AddMenuLine();
+        AddPageItem("PDF davor einfügen …", "", () => PickAndInsert(MenuPages.Min()));
+        AddPageItem("PDF dahinter einfügen …", "", () => PickAndInsert(MenuPages.Max() + 1));
+        AddMenuLine();
+        undoItem = AddPageItem("Rückgängig", "Strg+Z", Undo);
+        saveItem = AddPageItem("Speichern", "Strg+S", () => _ = Save());
+    }
+
+    Button AddPageItem(string text, string keys, Action action)
+    {
+        var shortcut = new TextBlock { Text = keys, Foreground = (Brush)FindResource("MutedBrush"), Margin = new Thickness(24, 0, 0, 0) };
+        DockPanel.SetDock(shortcut, Dock.Right);
+        var item = new Button
+        {
+            Style = (Style)FindResource("MenuButton"),
+            HorizontalContentAlignment = HorizontalAlignment.Stretch,
+            Content = new DockPanel { Children = { shortcut, new TextBlock { Text = text } } },
+        };
+        item.Click += (_, _) =>
+        {
+            PageMenu.IsOpen = false;
+            action();
+        };
+        PageMenuItems.Children.Add(item);
+        return item;
+    }
+
+    void AddMenuLine() =>
+        PageMenuItems.Children.Add(new Border { Height = 1, Margin = new Thickness(6, 4, 6, 4), Background = (Brush)FindResource("LineBrush") });
+
+    void OpenPageMenu()
+    {
+        if (layout is null) return;
+        undoItem!.IsEnabled = edits.Count > 0;
+        saveItem!.IsEnabled = edits.Count > 0 || quarterTurns.Any(turns => turns != 0);
+        PageMenu.IsOpen = true;
+    }
+
+    /// <summary>Löschen bleibt ein gesammelter Schritt; eine PDF ohne Seiten gibt es nicht.</summary>
+    async void DeletePagesCommand(int[] pages)
+    {
+        if (layout is null) return;
+        if (pages.Length >= pagesPt.Count)
+        {
+            ShowNotice("Mindestens eine Seite muss bleiben");
+            return;
+        }
+        if (await Edit(new DeletePages(pages), pages.Min()) >= 0)
+            ShowNotice($"{PagesText(pages)} gelöscht – Strg+Z nimmt es zurück, Strg+S speichert");
+    }
+
+    async void MovePagesTo(int[] pages, int gap)
+    {
+        var move = MovePages.ToGap(pages, gap);
+        if (layout is null || !move.ChangesOrder(pagesPt.Count)) return;
+        if (await Edit(move, move.Destination) >= 0) Thumbs.Select(Enumerable.Range(move.Destination, pages.Length));
+    }
+
+    void PickAndInsert(int at)
+    {
+        var dialog = new OpenFileDialog { Filter = "PDF-Dateien|*.pdf", Multiselect = true };
+        if (dialog.ShowDialog(this) == true) InsertFiles(dialog.FileNames, at);
+    }
+
+    /// <summary>Jede Datei ein eigener Schritt; rückwärts vor dieselbe Stelle, so bleibt ihre Reihenfolge.</summary>
+    async void InsertFiles(string[] files, int at)
+    {
+        if (layout is null) return;
+        var before = pagesPt.Count;
+        foreach (var file in files.Reverse())
+        {
+            // Rückgängig wendet das Einfügen erneut an: dafür eine eigene Kopie, die niemand verschiebt oder löscht.
+            string copy;
+            try
+            {
+                copy = Path.Combine(PageDragData.ExportFolder(), Path.GetFileName(file));
+                await Task.Run(() => File.Copy(file, copy)); // große PDF von der NAS: Oberfläche und Ablegen nicht einfrieren
+            }
+            catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+            {
+                ShowNotice($"„{Path.GetFileName(file)}“ lässt sich nicht lesen: {e.Message}");
+                break;
+            }
+            if (await Edit(new InsertPages(copy, at), at) < 0) break;
+        }
+        var added = pagesPt.Count - before;
+        if (added <= 0) return;
+        Thumbs.Select(Enumerable.Range(at, added));
+        ShowNotice($"{added} {(added == 1 ? "Seite" : "Seiten")} eingefügt – Strg+S speichert");
+    }
+
+    /// <summary>Kopieren oder verschieben in eine neue PDF; gedreht wie in der Ansicht.</summary>
+    async void ExportPages(int[] pages, bool move)
+    {
+        if (renderer is null) return;
+        if (busy)
+        {
+            ShowNotice("Einen Moment – die letzte Änderung läuft noch");
+            return;
+        }
+        if (move && pages.Length >= pagesPt.Count)
+        {
+            ShowNotice("Mindestens eine Seite muss bleiben – zum Kopieren „In neue PDF kopieren“");
+            return;
+        }
+        var dialog = new SaveFileDialog
+        {
+            Filter = "PDF-Dateien|*.pdf",
+            DefaultExt = ".pdf",
+            FileName = ExportName(pages),
+            InitialDirectory = Path.GetDirectoryName(documentPath),
+        };
+        if (dialog.ShowDialog(this) != true) return;
+        if (string.Equals(Path.GetFullPath(dialog.FileName), documentPath, StringComparison.OrdinalIgnoreCase))
+        {
+            ShowNotice("Das ist die offene Datei – Änderungen daran speichert Strg+S");
+            return;
+        }
+        var turns = pages.Select(page => quarterTurns[page]).ToArray();
+        try
+        {
+            await renderer.Invoke(document => document.ExportPages(pages, turns, dialog.FileName));
+        }
+        catch (Exception e) when (e is PdfException or IOException or UnauthorizedAccessException or TaskCanceledException)
+        {
+            ShowNotice($"Neue PDF fehlgeschlagen: {e.Message}");
+            return;
+        }
+        if (move && await Edit(new DeletePages(pages), pages.Min()) < 0) return;
+        ShowNotice($"{PagesText(pages)} {(move ? "verschoben" : "kopiert")} nach „{Path.GetFileName(dialog.FileName)}“");
+    }
+
+    string ExportName(int[] pages) => $"{Path.GetFileNameWithoutExtension(fileName)} – {PagesText(pages)}.pdf";
+
+    static string PagesText(int[] pages) =>
+        (pages.Length == 1 ? "Seite " : "Seiten ") +
+        string.Join(", ", PrintJob.RunsOf([.. pages.Order()]).Select(run => run.From == run.To ? $"{run.From}" : $"{run.From}–{run.To}"));
+
+    /// <summary>
+    /// Miniaturen hinausziehen. Ziel ist die eigene Leiste (verschieben, OnPagesDropped), ein anderes
+    /// Fenster oder der Explorer: dort landet eine neue PDF, erst beim Ablegen angelegt. Meldet das Ziel
+    /// „verschieben“ zurück (Umschalt), fallen die Seiten hier weg.
+    /// </summary>
+    void DragPagesOut(int[] pages)
+    {
+        if (renderer is null || busy) return;
+        var source = renderer;
+        var turns = pages.Select(page => quarterTurns[page]).ToArray();
+        var name = ExportName(pages);
+        // Läuft im Ziehen auf dem UI-Thread; der Render-Thread braucht ihn dafür nicht, also kein Stillstand.
+        var data = new PageDragData(pages, () =>
+        {
+            var path = Path.Combine(PageDragData.ExportFolder(), name);
+            source.Invoke(document => document.ExportPages(pages, turns, path)).GetAwaiter().GetResult();
+            return path;
+        });
+        droppedInside = false;
+        var effect = DragDrop.DoDragDrop(Thumbs, data, DragDropEffects.Copy | DragDropEffects.Move);
+        if (data.Error is { } error)
+        {
+            ShowNotice($"Seiten ließen sich nicht übergeben: {error}");
+            return;
+        }
+        if (effect != DragDropEffects.Move || droppedInside || renderer != source) return;
+        if (pages.Length >= pagesPt.Count) ShowNotice("Kopiert – mindestens eine Seite muss hier bleiben");
+        else DeletePagesCommand(pages);
+    }
+
+    /// <returns>Seitenzahl danach, −1 wenn nichts geschah.</returns>
+    async Task<int> Edit(PageEdit edit, int focusPage)
+    {
+        if (renderer is null || BlockedByWork()) return -1;
+        var opening = renderer;
+        busy = true;
+        mainWanted = [];
+        opening.Request([]);
+        try
+        {
+            var sizes = await opening.Invoke(document =>
+            {
+                edit.Apply(document);
+                return PageRenderer.SizesOf(document);
+            });
+            if (renderer != opening) return -1;
+            edits.Add((edit, quarterTurns));
+            quarterTurns = edit.Remap(quarterTurns, sizes.Length, 0);
+            ShowPages(sizes, focusPage);
+            EditsChanged();
+            return sizes.Length;
+        }
+        catch (Exception e) when (e is PdfException or TaskCanceledException)
+        {
+            if (renderer != opening) return -1;
+            ShowNotice($"Änderung nicht möglich: {e.Message}");
+            // PDFium kann ein Dokument halb geändert zurücklassen (FPDF_MovePages): neu laden, gesammelte Schritte wieder anwenden.
+            await Reload(quarterTurns, currentPage);
+            return -1;
+        }
+        finally
+        {
+            busy = false;
+        }
+    }
+
+    /// <summary>
+    /// Läuft eine Änderung oder ein Druck? Der Druckauftrag holt seine Seiten über ihre Nummern vom selben
+    /// Dokument — eine Änderung mittendrin verschöbe den Ausdruck, Neuladen bräche ihn ab.
+    /// </summary>
+    bool BlockedByWork()
+    {
+        if (busy) ShowNotice("Einen Moment – die letzte Änderung läuft noch");
+        else if (printing > 0) ShowNotice("Erst nach dem Druck");
+        else return false;
+        return true;
+    }
+
+    /// <summary>Ansicht und Leiste nach einer Änderung am offenen Dokument neu aufbauen.</summary>
+    void ShowPages(IReadOnlyList<Size> sizes, int focusPage)
+    {
+        pagesPt = sizes;
+        foreach (var result in rendered.Values) Discard(result);
+        slots.Clear();
+        spareSlots.Clear();
+        rendered.Clear();
+        pageErrors.Clear();
+        mainWanted = [];
+        PageCanvas.Children.Clear();
+        layout = null;
+        titlePage = -1;
+        pinnedOffset = null;
+        Thumbs.Show(sizes, quarterTurns, sidebarWidth.Value);
+        currentPage = Math.Clamp(focusPage, 0, sizes.Count - 1);
+        ApplyZoom();
+        GoTo(currentPage);
+        LoadOutline(renderer!);
+    }
+
+    /// <summary>
+    /// Datei neu öffnen und die gesammelten Änderungen erneut anwenden — für Strg+Z, nach dem Speichern und
+    /// wenn eine Änderung scheiterte. turns gehört zum Stand danach; null heißt ungedreht.
+    /// </summary>
+    async Task<bool> Reload(int[]? turns, int focusPage)
+    {
+        busy = true;
+        try
+        {
+            if (renderer is { } old)
+            {
+                old.Dispose();
+                await old.Closed;
+            }
+            var opening = renderer = new PageRenderer(documentPath, Dispatcher, Deliver);
+            var replay = edits.Select(entry => entry.Edit).ToArray();
+            await opening.Opened;
+            var sizes = await opening.Invoke(document =>
+            {
+                foreach (var edit in replay) edit.Apply(document);
+                return PageRenderer.SizesOf(document);
+            });
+            if (renderer != opening) return false;
+            quarterTurns = turns is { } kept && kept.Length == sizes.Length ? kept : new int[sizes.Length];
+            ShowPages(sizes, focusPage);
+            return true;
+        }
+        catch (Exception e) when (e is PdfException or TaskCanceledException)
+        {
+            CloseDocument();
+            NoticePill.Visibility = Visibility.Collapsed;
+            ShowMessage($"„{fileName}“ lässt sich nicht neu laden", e.Message);
+            return false;
+        }
+        finally
+        {
+            busy = false;
+        }
+    }
+
+    async void Undo()
+    {
+        if (layout is null || BlockedByWork()) return;
+        if (edits.Count == 0)
+        {
+            ShowNotice("Nichts zurückzunehmen");
+            return;
+        }
+        // ponytail: Drehungen nach der zurückgenommenen Änderung gehen mit verloren; ein eigener Verlauf je Drehung erst, wenn das stört.
+        var (_, turnsBefore) = edits[^1];
+        edits.RemoveAt(edits.Count - 1);
+        EditsChanged();
+        if (await Reload(turnsBefore, currentPage))
+            ShowNotice(edits.Count == 0 ? "Alle Änderungen zurückgenommen" : "Letzte Änderung zurückgenommen");
+    }
+
+    /// <summary>
+    /// Strg+S: Änderungen und Drehungen der Ansicht in die Datei. PDFium schreibt eine vollständige Kopie
+    /// daneben; erst danach wird das Dokument geschlossen und das Original ersetzt (es ist geöffnet und
+    /// damit gesperrt). Scheitert das Ersetzen, bleibt der Zwischenstand erhalten.
+    /// </summary>
+    async Task<bool> Save()
+    {
+        if (renderer is null || layout is null || BlockedByWork()) return false;
+        var turns = (int[])quarterTurns.Clone();
+        if (edits.Count == 0 && turns.All(turn => turn == 0))
+        {
+            ShowNotice("Nichts zu speichern");
+            return true;
+        }
+        var opening = renderer;
+        var temp = Path.Combine(Path.GetDirectoryName(documentPath)!, $".{Path.GetFileNameWithoutExtension(documentPath)}.fletta-{Guid.NewGuid():N}.tmp");
+        busy = true;
+        mainWanted = [];
+        opening.Request([]);
+        try
+        {
+            if (await opening.Invoke(document => document.SignatureCount) > 0 &&
+                MessageBox.Show(this, $"„{fileName}“ ist digital signiert. Speichern macht die Signatur ungültig.\n\nTrotzdem speichern?",
+                                "Fletta", MessageBoxButton.YesNo, MessageBoxImage.Warning) != MessageBoxResult.Yes)
+                return false;
+            ShowNotice("Speichere …");
+            noticeTimer.Stop(); // bleibt stehen, bis „gespeichert“ oder ein Fehler ihn ersetzt
+            await opening.Invoke(document =>
+            {
+                var rotated = 0;
+                try
+                {
+                    for (; rotated < turns.Length; rotated++)
+                        if (turns[rotated] != 0) document.Rotate(rotated, turns[rotated]);
+                    document.SaveAs(temp);
+                }
+                finally
+                {
+                    // Der Zwischenstand bleibt ungedreht wie vorher — die Drehung steckt weiter in der Ansicht.
+                    // Nur zurück, was schon gedreht war: scheitert Seite k, blieben sonst alle davor doppelt gedreht.
+                    for (var page = 0; page < rotated; page++)
+                        if (turns[page] != 0) document.Rotate(page, -turns[page]);
+                }
+            });
+        }
+        catch (Exception e) when (e is PdfException or IOException or UnauthorizedAccessException or TaskCanceledException)
+        {
+            TryDelete(temp);
+            ShowNotice($"Speichern fehlgeschlagen: {e.Message}");
+            return false;
+        }
+        finally
+        {
+            busy = false;
+        }
+
+        busy = true;
+        opening.Dispose();
+        await opening.Closed;
+        try
+        {
+            File.Move(temp, documentPath, overwrite: true);
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+        {
+            // Original unverändert: Zwischenstand wiederherstellen. Die geschriebene Kopie erst weg, wenn das klappt.
+            if (await Reload(turns, currentPage))
+            {
+                TryDelete(temp);
+                ShowNotice($"Speichern fehlgeschlagen: {e.Message}");
+            }
+            else ShowMessage($"„{fileName}“ ließ sich nicht ersetzen", $"{e.Message}\nDer gespeicherte Stand liegt unter {temp}.");
+            return false;
+        }
+        edits.Clear();
+        EditsChanged();
+        var saved = await Reload(null, currentPage);
+        if (saved) ShowNotice($"„{fileName}“ gespeichert");
+        return saved;
+    }
+
+    static void TryDelete(string path)
+    {
+        try { File.Delete(path); }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException) { }
+    }
+
+    /// <summary>Schließen mit ungespeicherten Änderungen: speichern, verwerfen oder abbrechen.</summary>
+    async void ConfirmClose()
+    {
+        var answer = MessageBox.Show(this, $"Änderungen an „{fileName}“ speichern?", "Fletta",
+                                     MessageBoxButton.YesNoCancel, MessageBoxImage.Question);
+        if (answer == MessageBoxResult.Cancel || (answer == MessageBoxResult.Yes && !await Save())) return;
+        closeConfirmed = true;
+        // Bei „Nein“ liefe Close sonst noch innerhalb von OnClosing — WPF wirft dann, und der Prozess stürzt ab.
+        _ = Dispatcher.InvokeAsync(Close);
+    }
+
     /// <summary>Beim Schließen und beim Abmelden (App.OnSessionEnding) — nie im Messlauf.</summary>
     public void SaveSettings()
     {
@@ -1021,6 +1496,18 @@ public partial class MainWindow : Window
 
     protected override void OnClosing(CancelEventArgs e)
     {
+        if (busy)
+        {
+            e.Cancel = true;
+            ShowNotice("Einen Moment – die Änderung wird noch geschrieben");
+            return;
+        }
+        if (edits.Count > 0 && !closeConfirmed)
+        {
+            e.Cancel = true;
+            ConfirmClose();
+            return;
+        }
         SaveSettings();
         // Ein laufender Druck holt seine Seiten noch vom Renderer; das Fenster verschwindet nur
         // und wird geschlossen, sobald der Auftrag durch ist.

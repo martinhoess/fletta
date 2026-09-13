@@ -34,6 +34,7 @@ public partial class App : Application
 
         var path = e.Args.FirstOrDefault(a => !a.StartsWith("--"));
         IsMeasuring = flags.Contains("--measure");
+        if (!IsMeasuring) PageDragData.CleanUp();
         new MainWindow(path, measure: IsMeasuring).Show();
     }
 
@@ -41,6 +42,8 @@ public partial class App : Application
     protected override void OnSessionEnding(SessionEndingCancelEventArgs e)
     {
         foreach (var window in Windows.OfType<MainWindow>()) window.SaveSettings();
+        // Ungespeicherte Änderungen: Windows zeigt dann „Fletta verhindert das Abmelden“, und man kann zurück.
+        if (Windows.OfType<MainWindow>().Any(window => window.HasUnsavedEdits)) e.Cancel = true;
         base.OnSessionEnding(e);
     }
 

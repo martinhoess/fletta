@@ -145,6 +145,13 @@
           <StackPanel x:Name="ZoomMenuItems" MinWidth="150" />
         </Border>
       </Popup>
+      <!-- Rechtsklick auf Miniaturen; Einträge baut BuildPageMenu. -->
+      <Popup x:Name="PageMenu" Placement="MousePoint" StaysOpen="False" AllowsTransparency="True">
+        <Border Background="{StaticResource ChromeBrush}" BorderBrush="{StaticResource LineBrush}" BorderThickness="1"
+                CornerRadius="8" Padding="4">
+          <StackPanel x:Name="PageMenuItems" MinWidth="240" />
+        </Border>
+      </Popup>
 
       <!-- Rechts um die Breite der Bildlaufleiste eingerückt. -->
       <Border x:Name="PagePill" Style="{StaticResource Pill}" HorizontalAlignment="Right" Margin="0,0,34,18">

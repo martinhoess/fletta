@@ -32,15 +32,20 @@
   </UserControl.Resources>
 
   <Border Background="{StaticResource PanelBrush}" BorderBrush="{StaticResource LineBrush}" BorderThickness="0,0,1,0">
+    <Grid>
+    <!-- Seiten ziehen, ablegen und per Rechtsklick bearbeiten: siehe OnListPress, OnListDrop, MenuRequested. -->
     <ListBox x:Name="List" SelectionMode="Extended" Background="Transparent" BorderThickness="0"
              ItemContainerStyle="{StaticResource ThumbItemStyle}"
              VirtualizingPanel.IsVirtualizing="True" VirtualizingPanel.VirtualizationMode="Recycling"
-             VirtualizingPanel.ScrollUnit="Pixel"
-             ScrollViewer.ScrollChanged="OnListScrolled" PreviewMouseLeftButtonUp="OnListClick">
+             VirtualizingPanel.ScrollUnit="Pixel" AllowDrop="True"
+             ScrollViewer.ScrollChanged="OnListScrolled" PreviewMouseLeftButtonUp="OnListClick"
+             PreviewMouseLeftButtonDown="OnListPress" PreviewMouseMove="OnListMove"
+             PreviewMouseRightButtonUp="OnListRightClick"
+             DragOver="OnListDragOver" DragLeave="OnListDragLeave" Drop="OnListDrop">
       <ListBox.Template>
         <ControlTemplate TargetType="ListBox">
           <!-- Kein senkrechter Innenabstand, sonst stimmt die Rechnung Offset / ItemHeight nicht. -->
-          <ScrollViewer Focusable="False" CanContentScroll="True"
+          <ScrollViewer x:Name="ListScroller" Focusable="False" CanContentScroll="True"
                         HorizontalScrollBarVisibility="Disabled" VerticalScrollBarVisibility="Visible">
             <ItemsPresenter Margin="6,0" />
           </ScrollViewer>
@@ -61,5 +66,10 @@
         </DataTemplate>
       </ListBox.ItemTemplate>
     </ListBox>
+    <!-- Einfügemarke beim Ablegen: eine Linie in der Lücke zwischen zwei Miniaturen. -->
+    <Canvas IsHitTestVisible="False" ClipToBounds="True">
+      <Rectangle x:Name="DropMarker" Height="3" RadiusX="1.5" RadiusY="1.5" Fill="{StaticResource AccentBrush}" Visibility="Collapsed" />
+    </Canvas>
+    </Grid>
   </Border>
 </UserControl>
