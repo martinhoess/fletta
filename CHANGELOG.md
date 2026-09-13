@@ -2,6 +2,10 @@
 
 Die Release-CI übernimmt den Abschnitt der jeweiligen Version als Text des GitHub-Releases.
 
+## 0.12.2
+
+- Die Miniaturenleiste folgt der aktuellen Seite zuverlässig: die aktuelle Miniatur steht immer ganz im Bild, auch am Dokumentende.
+
 ## 0.12.1
 
 - Mausrad über den Miniaturen scrollt das Dokument; die Leiste folgt der aktuellen Seite.
