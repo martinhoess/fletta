@@ -23,8 +23,10 @@ public partial class ThumbnailPanel : UserControl
     // Karte 2 × (8 Innenabstand + 2 Rahmen). Senkrecht: Beschriftung 22 plus Karte 20.
     const double HorizontalChrome = 1 + 12 + 12 + 20, LabelHeight = 22, CardChrome = 20;
     const double MinBox = 40;
-    const int Prefetch = 6;      // so viele Einträge über und unter dem Sichtbaren werden vorab gerendert
-    const int KeepRendered = 8;  // darüber hinaus werden Bilder verworfen; muss über Prefetch liegen
+    // Vorab gerendert wird vor allem in Scrollrichtung: eine Miniatur kostet am Suzuki-Handbuch ~160 ms, beim
+    // Durchscrollen kamen die Bilder mit 6 in beide Richtungen (die schon gesehenen zuerst) zu spät.
+    internal const int PrefetchAhead = 12, PrefetchBehind = 4;
+    const int KeepRendered = 16; // darüber hinaus werden Bilder verworfen; muss über PrefetchAhead liegen
 
     // Ein Feld, auf einmal übergeben: 990 einzelne Add-Aufrufe an einer ObservableCollection kosteten
     // die ListBox vor dem ersten Bild rund eine Sekunde (gemessen 2026-09-10). Einzeln hinzu kommt nie etwas.
@@ -37,6 +39,7 @@ public partial class ThumbnailPanel : UserControl
     (int First, int Last) visible = (0, -1);
     int current = -1;
     double scrollOffset;
+    bool scrollingUp;
     ThumbItem? pressed;   // gedrückt, noch nicht gezogen
     Point pressedAt;
     bool keepSelection;   // Druck auf eine Mehrfachauswahl: sie bleibt fürs Ziehen stehen
@@ -195,6 +198,7 @@ public partial class ThumbnailPanel : UserControl
     void OnListScrolled(object sender, ScrollChangedEventArgs e)
     {
         scrollOffset = e.VerticalOffset;
+        if (e.VerticalChange != 0) scrollingUp = e.VerticalChange < 0;
         visible = VisibleRange(e.VerticalOffset, e.ViewportHeight, ItemHeight, items.Length);
         foreach (var item in items)
             if (item.Bitmap is not null && (item.Page < visible.First - KeepRendered || item.Page > visible.Last + KeepRendered))
@@ -313,16 +317,29 @@ public partial class ThumbnailPanel : UserControl
         FilesDropped?.Invoke(files, gap);
     }
 
-    /// <summary>Sichtbare Miniaturen zuerst, dann die Nachbarn; was schon passend da ist, fehlt.</summary>
+    /// <summary>Sichtbare Miniaturen zuerst, dann vorab in Scrollrichtung; was schon passend da ist, fehlt.</summary>
     public IEnumerable<RenderRequest> Wanted()
     {
         if (items.Length == 0 || boxSize <= 0 || !IsVisible) return [];
-        var (first, last) = visible;
-        return Enumerable.Range(first - Prefetch, last - first + 1 + 2 * Prefetch)
-            .Where(page => page >= 0 && page < items.Length && !items[page].Failed)
-            .OrderBy(page => page < first || page > last)
+        return PrefetchOrder(visible.First, visible.Last, items.Length, scrollingUp)
+            .Where(page => !items[page].Failed)
             .Select(RequestFor)
             .Where(request => items[request.Page].Request != request);
+    }
+
+    /// <summary>
+    /// Sichtbare Einträge, dann PrefetchAhead in Scrollrichtung, dann PrefetchBehind dagegen, je nach Abstand;
+    /// innerhalb von 0..count. Im Selbsttest geprüft.
+    /// </summary>
+    public static IEnumerable<int> PrefetchOrder(int first, int last, int count, bool up)
+    {
+        if (count == 0 || last < first) return [];
+        var (before, after) = up ? (PrefetchAhead, PrefetchBehind) : (PrefetchBehind, PrefetchAhead);
+        int Distance(int page) => page < first ? first - page : page > last ? page - last : 0;
+        return Enumerable.Range(first - before, last - first + 1 + before + after)
+            .Where(page => page >= 0 && page < count)
+            .OrderBy(page => Distance(page) == 0 ? 0 : (page < first) == up ? 1 : 2)
+            .ThenBy(Distance);
     }
 
     RenderRequest RequestFor(int page)

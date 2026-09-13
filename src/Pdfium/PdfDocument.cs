@@ -16,13 +16,22 @@ public sealed class PdfDocument : IDisposable
     const uint White = 0xFFFFFFFF;
     const uint ActionGoTo = 1;          // PDFACTION_GOTO
     const int MaxOutlineEntries = 10_000, MaxOutlineDepth = 32;
+    // PDFium zerlegt den Seiteninhalt erst beim ersten Rendern und behält ihn am offenen FPDF_PAGE: am
+    // Suzuki-Handbuch 158 ms fürs erste, 32 ms fürs zweite Rendern derselben geladenen Seite, das Laden selbst
+    // 1,5 ms (windows-pc, 2026-09-13). Jede offene Seite belegt dort aber rund 5 MB (Test-VM: 16 offene +74 MB,
+    // 6 offene +32 MB). Zwei reichen: MainWindow stellt die Miniatur direkt hinter ihre Hauptseite.
+    internal const int KeepPagesOpen = 2;
 
     // Einmal je Prozess; freigegeben wird beim Beenden vom Betriebssystem.
     static PdfDocument() => Native.FPDF_InitLibraryWithConfig(new Native.LibraryConfig { Version = 2 });
 
     nint handle;
+    readonly List<(int Index, nint Page)> openPages = []; // zuletzt benutzte hinten
 
     PdfDocument(nint handle) => this.handle = handle;
+
+    /// <summary>Für den Selbsttest: so viele Seiten hält das Dokument gerade offen.</summary>
+    internal int OpenPageCount => openPages.Count;
 
     /// <summary>Ändert sich mit DeletePages und InsertFrom.</summary>
     public int PageCount
@@ -77,7 +86,6 @@ public sealed class PdfDocument : IDisposable
         finally
         {
             bitmap.Unlock();
-            Native.FPDF_ClosePage(page);
         }
         bitmap.Freeze();
         return bitmap;
@@ -100,23 +108,14 @@ public sealed class PdfDocument : IDisposable
         finally
         {
             if (text != 0) Native.FPDFText_ClosePage(text);
-            Native.FPDF_ClosePage(page);
         }
     }
 
     /// <summary>Druckt eine Seite auf ein Drucker-HDC; Koordinaten in Gerätepixeln, Drehung wie bei Render.</summary>
     public void Print(int index, nint hdc, int x, int y, int width, int height, int quarterTurns)
     {
-        var page = LoadPage(index);
-        try
-        {
-            if (!Native.FPDF_RenderPage(hdc, page, x, y, width, height, quarterTurns, RenderAnnotations | RenderForPrinting))
-                throw new PdfException(PdfException.PageError);
-        }
-        finally
-        {
-            Native.FPDF_ClosePage(page);
-        }
+        if (!Native.FPDF_RenderPage(hdc, LoadPage(index), x, y, width, height, quarterTurns, RenderAnnotations | RenderForPrinting))
+            throw new PdfException(PdfException.PageError);
     }
 
     /// <summary>
@@ -165,12 +164,17 @@ public sealed class PdfDocument : IDisposable
     }
 
     /// <summary>Dreht die Seite in der Datei (/Rotate) um quarterTurns Viertel im Uhrzeigersinn weiter.</summary>
-    public void Rotate(int index, int quarterTurns) => RotatePage(handle, index, quarterTurns);
+    public void Rotate(int index, int quarterTurns)
+    {
+        ClosePages();
+        RotatePage(handle, index, quarterTurns);
+    }
 
     /// <summary>Löscht die Seiten; Reihenfolge der Angabe egal.</summary>
     public void DeletePages(IEnumerable<int> pages)
     {
         ObjectDisposedException.ThrowIf(handle == 0, this);
+        ClosePages();
         foreach (var page in pages.Distinct().OrderDescending()) Native.FPDFPage_Delete(handle, page);
     }
 
@@ -178,6 +182,7 @@ public sealed class PdfDocument : IDisposable
     public unsafe void MovePages(int[] pages, int destination)
     {
         ObjectDisposedException.ThrowIf(handle == 0, this);
+        ClosePages();
         fixed (int* indices = pages)
             if (!Native.FPDF_MovePages(handle, indices, (uint)pages.Length, destination))
                 throw new PdfException(PdfException.EditError);
@@ -187,6 +192,7 @@ public sealed class PdfDocument : IDisposable
     public unsafe int InsertFrom(string path, int at)
     {
         ObjectDisposedException.ThrowIf(handle == 0, this);
+        ClosePages();
         using var source = Open(path);
         var count = source.PageCount;
         if (!Native.FPDF_ImportPagesByIndex(handle, source.handle, null, 0, at)) throw new PdfException(PdfException.EditError);
@@ -279,16 +285,49 @@ public sealed class PdfDocument : IDisposable
         }
     }
 
+    /// <summary>
+    /// Offene Seite aus dem Vorrat, sonst frisch geladen. Nicht selbst schließen: das übernimmt der Vorrat,
+    /// spätestens bei einer Änderung am Dokument (Seitenindizes verschieben sich) und in Dispose.
+    /// </summary>
     nint LoadPage(int index)
     {
         ObjectDisposedException.ThrowIf(handle == 0, this);
+        var at = openPages.FindIndex(open => open.Index == index);
+        if (at >= 0)
+        {
+            var hit = openPages[at];
+            openPages.RemoveAt(at);
+            openPages.Add(hit);
+            return hit.Page;
+        }
         var page = Native.FPDF_LoadPage(handle, index);
-        return page == 0 ? throw new PdfException(PdfException.PageError) : page;
+        if (page == 0) throw new PdfException(PdfException.PageError);
+        openPages.Add((index, page));
+        if (openPages.Count > KeepPagesOpen)
+        {
+            Native.FPDF_ClosePage(openPages[0].Page);
+            openPages.RemoveAt(0);
+        }
+        return page;
+    }
+
+    /// <summary>
+    /// Offene Seiten freigeben — der Render-Thread im Leerlauf: eine Scan-Seite hält ihre entpackten Bilder, das soll
+    /// nicht liegen bleiben, wenn nichts mehr zu rendern ist (Review 2026-09-13).
+    /// </summary>
+    public void ReleasePages() => ClosePages();
+
+    /// <summary>Vor jeder Änderung an Seiten und vor dem Schließen: offene Seiten dürfen das Dokument nicht überleben.</summary>
+    void ClosePages()
+    {
+        foreach (var (_, page) in openPages) Native.FPDF_ClosePage(page);
+        openPages.Clear();
     }
 
     public void Dispose()
     {
         if (handle == 0) return;
+        ClosePages();
         Native.FPDF_CloseDocument(handle);
         handle = 0;
     }
