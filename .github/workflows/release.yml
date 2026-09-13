@@ -21,11 +21,15 @@ jobs:
       - name: Version
         id: ver
         # Eine Stelle: <Version> im csproj. Ein Tag muss dazu passen, sonst trügen EXE und Setup verschiedene Nummern.
+        # vX.Y.Z-pre wird ein Prerelease derselben Version: der Update-Knopf sieht es nicht (GitHub liefert unter
+        # „latest“ keine Prereleases), zum Freigeben danach vX.Y.Z auf denselben Stand setzen.
         run: |
           $v = ([xml](Get-Content src/Fletta.csproj)).Project.PropertyGroup.Version | Where-Object { $_ } | Select-Object -First 1
           if ($v -notmatch '^\d+\.\d+\.\d+$') { throw "Version '$v' ist nicht x.y.z (Inno braucht Zahlen)" }
-          if ($env:GITHUB_REF_TYPE -eq 'tag' -and $env:GITHUB_REF_NAME -ne "v$v") { throw "Tag $env:GITHUB_REF_NAME passt nicht zu <Version>$v" }
+          $pre = $env:GITHUB_REF_NAME -eq "v$v-pre"
+          if ($env:GITHUB_REF_TYPE -eq 'tag' -and $env:GITHUB_REF_NAME -ne "v$v" -and -not $pre) { throw "Tag $env:GITHUB_REF_NAME passt nicht zu <Version>$v (oder v$v-pre)" }
           "version=$v" >> $env:GITHUB_OUTPUT
+          "prerelease=$pre" >> $env:GITHUB_OUTPUT
 
       # Lädt PDFium selbst (Target FetchPdfium im csproj).
       - name: Publish (self-contained)
@@ -49,4 +53,5 @@ jobs:
         if: github.ref_type == 'tag'
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create $env:GITHUB_REF_NAME (Get-Item dist\*.exe).FullName --title $env:GITHUB_REF_NAME --generate-notes
+        # Das Flag als Actions-Ausdruck (true/false): in PowerShell zerfiele ein bedingtes Feld beim Splatting in Zeichen.
+        run: gh release create $env:GITHUB_REF_NAME (Get-Item dist\*.exe).FullName --title $env:GITHUB_REF_NAME --generate-notes --prerelease=${{ steps.ver.outputs.prerelease == 'True' }}
