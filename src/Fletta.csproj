@@ -11,7 +11,7 @@
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <AssemblyName>Fletta</AssemblyName>
     <RootNamespace>Fletta</RootNamespace>
-    <Version>0.11.0</Version>
+    <Version>0.12.0</Version>
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <ApplicationIcon>fletta.ico</ApplicationIcon>
     <!-- pdfium.dll gibt es hier nur für x64. -->
