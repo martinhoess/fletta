@@ -153,7 +153,9 @@ public partial class ThumbnailPanel : UserControl
         current = page;
         if (page < 0 || page >= items.Length) return;
         items[page].IsCurrent = true;
-        if (page < visible.First || page > visible.Last) List.ScrollIntoView(items[page]);
+        // Immer, nicht nur außerhalb von visible: das zählt angeschnittene Einträge mit, die Leiste hing beim Scrollen
+        // eine Seite hinterher und kam am Dokumentende nicht ganz mit (Martin, 2026-09-13). Ganz sichtbar: kein Bildlauf.
+        List.ScrollIntoView(items[page]);
     }
 
     /// <summary>Größe und Drehung einer Seite neu setzen, etwa nach R / L.</summary>
