@@ -1,7 +1,8 @@
 # Fletta
 
 *fletta* ist isländisch für „blättern“. Schneller PDF-Betrachter für Windows. Ein Fenster pro PDF, Miniaturen, Zoom, Drehen mit
-`R`/`L` (nur in der Ansicht, die Datei bleibt unverändert), Drucken, Seite kopieren.
+`R`/`L`, Drucken, Seite kopieren — und Seiten bearbeiten: löschen, umsortieren, einfügen, in eine neue PDF
+kopieren oder verschieben. Geändert wird die Datei erst mit `Strg+S`.
 
 <img height="500" alt="image" src="https://github.com/user-attachments/assets/c97593a5-b6a1-4453-9a34-cfe2773217ac" />
 
@@ -37,7 +38,13 @@ Fletta.exe --measure datei   öffnet, rendert, schreibt die Zeitmarken auf stder
 
 | Taste | Wirkung |
 |---|---|
-| `R` / `L` | rechts / links drehen (nur Ansicht): markierte Miniaturen, sonst die aktuelle Seite |
+| `R` / `L` | rechts / links drehen: markierte Miniaturen, sonst die aktuelle Seite (Ansicht; `Strg+S` schreibt es in die Datei) |
+| Rechtsklick auf Miniaturen | drehen, löschen, in neue PDF kopieren oder verschieben, PDF davor oder dahinter einfügen |
+| Miniaturen ziehen | umsortieren; hinaus in den Explorer oder ein anderes Fenster kopiert sie als neue PDF, mit Umschalt verschoben |
+| PDF auf die Miniaturen ziehen | ihre Seiten an dieser Stelle einfügen |
+| Entf | markierte Miniaturen löschen, sonst die aktuelle Seite |
+| Strg+Z | letzte Änderung zurücknehmen |
+| Strg+S | Änderungen und Drehungen speichern; die Datei wird vollständig neu geschrieben |
 | F4 oder Knopf oben links | Seitenleiste mit Miniaturen und Gliederung ein/aus (Rand ziehen ändert die Breite) |
 | B | Doppelseite wie ein Buch ein/aus (Deckblatt einzeln, danach Paare) |
 | S | seitenweise blättern ein/aus: Mausrad (je Rastung), Bild↓ und Leertaste gehen eine Seite (ein Paar) weiter; ist die Seite höher als das Fenster, erst bis zu ihrem Rand |
@@ -54,6 +61,11 @@ Fletta.exe --measure datei   öffnet, rendert, schreibt die Zeitmarken auf stder
 | Strg+C | aktuelle Seite als Bild (200 dpi) und Text in die Zwischenablage |
 | Strg+Umschalt+C | nur den Text der aktuellen Seite |
 | Esc | Mehrfachauswahl aufheben, sonst Fenster schließen |
+
+Änderungen sammelt Fletta, bis gespeichert wird; der Fenstertitel zeigt dann „●“, und beim Schließen
+fragt Fletta nach. Beim Speichern verschwinden gelöschte Seiten wirklich aus der Datei. Lesezeichen
+bleiben erhalten, zeigen aber ins Leere, wenn ihre Seite gelöscht wurde; digital signierte PDFs verlieren
+beim Speichern ihre Signatur (Fletta warnt vorher).
 
 PDFs lassen sich auch ins Fenster ziehen; ist schon eines offen, startet für jedes weitere ein
 eigenes Fenster. Die aktuelle Seite steht im Fenstertitel und unten rechts; dort springt eine

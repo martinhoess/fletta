@@ -127,7 +127,7 @@ public sealed class PageRenderer : IDisposable
         try
         {
             document = PdfDocument.Open(path);
-            opened.SetResult(Enumerable.Range(0, document.PageCount).Select(i => SizeOrFallback(document, i)).ToArray());
+            opened.SetResult(SizesOf(document));
         }
         catch (PdfException e)
         {
@@ -181,6 +181,9 @@ public sealed class PageRenderer : IDisposable
             return true;
         }
     }
+
+    /// <summary>Seitengrößen in Punkten; nach einer Änderung auf dem Render-Thread neu zu lesen.</summary>
+    public static Size[] SizesOf(PdfDocument document) => [.. Enumerable.Range(0, document.PageCount).Select(page => SizeOrFallback(document, page))];
 
     static Size SizeOrFallback(PdfDocument document, int page)
     {

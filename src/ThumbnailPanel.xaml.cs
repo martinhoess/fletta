@@ -15,6 +15,10 @@ namespace Fletta;
 /// </summary>
 public partial class ThumbnailPanel : UserControl
 {
+    /// <summary>Ziehdaten „Prozess-ID:Seiten“ — daran erkennt die Leiste Seiten aus dem eigenen Fenster.</summary>
+    public const string PagesFormat = "Fletta.Pages";
+    const double DropScrollEdge = 40, DropScrollStep = 30;
+
     // Waagrecht um die Miniatur: Randlinie 1, Innenabstand der Liste 2 × 6, Bildlaufleiste 12,
     // Karte 2 × (8 Innenabstand + 2 Rahmen). Senkrecht: Beschriftung 22 plus Karte 20.
     const double HorizontalChrome = 1 + 12 + 12 + 20, LabelHeight = 22, CardChrome = 20;
@@ -32,6 +36,10 @@ public partial class ThumbnailPanel : UserControl
     double boxSize;
     (int First, int Last) visible = (0, -1);
     int current = -1;
+    double scrollOffset;
+    ThumbItem? pressed;   // gedrückt, noch nicht gezogen
+    Point pressedAt;
+    bool keepSelection;   // Druck auf eine Mehrfachauswahl: sie bleibt fürs Ziehen stehen
 
     public ThumbnailPanel()
     {
@@ -57,6 +65,21 @@ public partial class ThumbnailPanel : UserControl
 
     /// <summary>Die gewünschten Bilder haben sich geändert: Aufträge neu zusammenstellen.</summary>
     public event Action? WantedChanged;
+
+    /// <summary>Rechtsklick auf eine Miniatur; die Auswahl enthält sie schon.</summary>
+    public event Action? MenuRequested;
+
+    /// <summary>Markierte Miniaturen werden gezogen: das Fenster startet das Ziehen mit diesen Seiten.</summary>
+    public event Action<int[]>? DragRequested;
+
+    /// <summary>Seiten aus diesem Fenster in eine Lücke gezogen (vor Eintrag gap, count = ans Ende).</summary>
+    public event Action<int[], int>? PagesDropped;
+
+    /// <summary>PDF-Dateien — auch Seiten aus einem anderen Fenster — in eine Lücke gezogen.</summary>
+    public event Action<string[], int>? FilesDropped;
+
+    /// <summary>Kann das Fenster gerade etwas einfügen? Sonst lehnt die Leiste ab, statt „angenommen“ zu melden.</summary>
+    public Func<bool>? CanAcceptDrop { get; set; }
 
     public DpiScale Dpi
     {
@@ -96,6 +119,25 @@ public partial class ThumbnailPanel : UserControl
     public int[] SelectedPages => [.. List.SelectedItems.Cast<ThumbItem>().Select(item => item.Page).Order()];
 
     public void SelectAll() => List.SelectAll();
+
+    /// <summary>Markiert genau diese Seiten, etwa die eben verschobenen oder eingefügten.</summary>
+    public void Select(IEnumerable<int> pages)
+    {
+        List.SelectedItems.Clear();
+        foreach (var page in pages)
+            if (page >= 0 && page < items.Length) List.SelectedItems.Add(items[page]);
+        if (List.SelectedItems.Count > 0) List.ScrollIntoView(List.SelectedItems[0]);
+    }
+
+    /// <summary>Seiten aus dem eigenen Prozess (Ziehdaten von <see cref="PagesFormat"/>), sonst null.</summary>
+    public static int[]? OwnPages(IDataObject data)
+    {
+        if (!data.GetDataPresent(PagesFormat) || data.GetData(PagesFormat) is not string text) return null;
+        var parts = text.Split(':');
+        return parts.Length == 2 && parts[0] == Environment.ProcessId.ToString()
+            ? [.. parts[1].Split(',', StringSplitOptions.RemoveEmptyEntries).Select(int.Parse)]
+            : null;
+    }
 
     /// <summary>Hebt eine Mehrfachauswahl auf. Gibt false zurück, wenn es keine gab.</summary>
     public bool ClearSelection()
@@ -150,6 +192,7 @@ public partial class ThumbnailPanel : UserControl
 
     void OnListScrolled(object sender, ScrollChangedEventArgs e)
     {
+        scrollOffset = e.VerticalOffset;
         visible = VisibleRange(e.VerticalOffset, e.ViewportHeight, ItemHeight, items.Length);
         foreach (var item in items)
             if (item.Bitmap is not null && (item.Page < visible.First - KeepRendered || item.Page > visible.Last + KeepRendered))
@@ -160,7 +203,112 @@ public partial class ThumbnailPanel : UserControl
 
     void OnListClick(object sender, MouseButtonEventArgs e)
     {
-        if ((e.OriginalSource as FrameworkElement)?.DataContext is ThumbItem item) PageClicked?.Invoke(item.Page);
+        var item = ItemAt(e);
+        if (keepSelection && item is not null) List.SelectedItem = item; // gedrückt, aber nicht gezogen: nur dieser
+        (pressed, keepSelection) = (null, false);
+        if (item is not null) PageClicked?.Invoke(item.Page);
+    }
+
+    static ThumbItem? ItemAt(RoutedEventArgs e) => (e.OriginalSource as FrameworkElement)?.DataContext as ThumbItem;
+
+    /// <summary>
+    /// Druck auf eine Miniatur merkt sie fürs Ziehen. Liegt sie in einer Mehrfachauswahl, bleibt die
+    /// Auswahl stehen — sonst hebt die ListBox sie beim Drücken auf, und gezogen würde nur eine Seite.
+    /// </summary>
+    void OnListPress(object sender, MouseButtonEventArgs e)
+    {
+        pressed = ItemAt(e);
+        pressedAt = e.GetPosition(List);
+        keepSelection = pressed is not null && List.SelectedItems.Count > 1 && List.SelectedItems.Contains(pressed)
+                        && Keyboard.Modifiers == ModifierKeys.None;
+        if (keepSelection) e.Handled = true;
+    }
+
+    void OnListMove(object sender, MouseEventArgs e)
+    {
+        if (pressed is null || e.LeftButton != MouseButtonState.Pressed) return;
+        var moved = e.GetPosition(List) - pressedAt;
+        if (Math.Abs(moved.X) < SystemParameters.MinimumHorizontalDragDistance && Math.Abs(moved.Y) < SystemParameters.MinimumVerticalDragDistance) return;
+        var item = pressed;
+        (pressed, keepSelection) = (null, false);
+        if (!List.SelectedItems.Contains(item)) List.SelectedItem = item;
+        DragRequested?.Invoke(SelectedPages);
+    }
+
+    void OnListRightClick(object sender, MouseButtonEventArgs e)
+    {
+        if (ItemAt(e) is not { } item) return;
+        if (!List.SelectedItems.Contains(item)) List.SelectedItem = item;
+        e.Handled = true;
+        MenuRequested?.Invoke();
+    }
+
+    /// <summary>
+    /// Eigene Seiten werden verschoben. Seiten eines anderen Fensters kopiert, mit Umschalt verschoben (dort per
+    /// Strg+Z zurückholbar). Dateien aus dem Explorer immer kopiert: meldete die Leiste „verschieben“, löschte
+    /// der Explorer die Datei — auch wenn das Einfügen danach scheitert.
+    /// </summary>
+    DragDropEffects DropEffect(DragEventArgs e)
+    {
+        if (items.Length == 0 || CanAcceptDrop?.Invoke() == false) return DragDropEffects.None;
+        if (OwnPages(e.Data) is not null) return DragDropEffects.Move;
+        // Seiten eines anderen Fensters nicht schon beim Überfahren als Datei anfordern: das legte dort die PDF an.
+        var fromFletta = e.Data.GetDataPresent(PagesFormat);
+        if (!fromFletta && PdfFiles(e.Data).Length == 0) return DragDropEffects.None;
+        if (fromFletta && e.KeyStates.HasFlag(DragDropKeyStates.ShiftKey) && e.AllowedEffects.HasFlag(DragDropEffects.Move)) return DragDropEffects.Move;
+        return e.AllowedEffects.HasFlag(DragDropEffects.Copy) ? DragDropEffects.Copy : DragDropEffects.None;
+    }
+
+    static string[] PdfFiles(IDataObject data) =>
+        data.GetDataPresent(DataFormats.FileDrop) && data.GetData(DataFormats.FileDrop) is string[] files
+            ? [.. files.Where(file => file.EndsWith(".pdf", StringComparison.OrdinalIgnoreCase))]
+            : [];
+
+    /// <summary>Lücke unter dem Zeiger: vor dem Eintrag, dessen obere Hälfte er trifft.</summary>
+    int GapAt(DragEventArgs e) =>
+        Math.Clamp((int)Math.Round((e.GetPosition(List).Y + scrollOffset) / ItemHeight), 0, items.Length);
+
+    void OnListDragOver(object sender, DragEventArgs e)
+    {
+        e.Effects = DropEffect(e);
+        e.Handled = true;
+        if (e.Effects == DragDropEffects.None)
+        {
+            DropMarker.Visibility = Visibility.Collapsed;
+            return;
+        }
+        Canvas.SetLeft(DropMarker, 6);
+        Canvas.SetTop(DropMarker, GapAt(e) * ItemHeight - scrollOffset - DropMarker.Height / 2);
+        DropMarker.Width = Math.Max(0, ActualWidth - 12 - 12); // ohne Bildlaufleiste
+        DropMarker.Visibility = Visibility.Visible;
+        // Während des Ziehens scrollt das Mausrad nicht: am Rand der Leiste rollt sie selbst weiter.
+        var y = e.GetPosition(List).Y;
+        var step = y < DropScrollEdge ? -DropScrollStep : y > List.ActualHeight - DropScrollEdge ? DropScrollStep : 0;
+        if (step != 0 && List.Template.FindName("ListScroller", List) is ScrollViewer scroller)
+            scroller.ScrollToVerticalOffset(scrollOffset + step);
+    }
+
+    void OnListDragLeave(object sender, DragEventArgs e) => DropMarker.Visibility = Visibility.Collapsed;
+
+    void OnListDrop(object sender, DragEventArgs e)
+    {
+        DropMarker.Visibility = Visibility.Collapsed;
+        e.Handled = true; // sonst öffnete das Fenster die Datei zusätzlich in einem neuen Fenster
+        e.Effects = DropEffect(e);
+        if (e.Effects == DragDropEffects.None) return;
+        var gap = GapAt(e);
+        if (OwnPages(e.Data) is { } pages)
+        {
+            PagesDropped?.Invoke(pages, gap);
+            return;
+        }
+        var files = PdfFiles(e.Data);
+        if (files.Length == 0)
+        {
+            e.Effects = DragDropEffects.None; // die Quelle konnte ihre Seiten nicht liefern: dort nichts löschen
+            return;
+        }
+        FilesDropped?.Invoke(files, gap);
     }
 
     /// <summary>Sichtbare Miniaturen zuerst, dann die Nachbarn; was schon passend da ist, fehlt.</summary>

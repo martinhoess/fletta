@@ -1,6 +1,8 @@
 using System.IO;
+using System.IO.Compression;
 using System.Drawing.Printing;
 using System.Text;
+using System.Text.RegularExpressions;
 using System.Windows;
 using System.Windows.Media.Imaging;
 using System.Windows.Threading;
@@ -49,6 +51,7 @@ static class SelfTest
             failures += Check("kaputte Datei", OpenError(junk) == PdfException.FormatError);
 
             failures += LayoutChecks();
+            failures += EditChecks(good, dir.FullName);
             failures += RendererChecks(good, junk, dir.FullName);
         }
         finally
@@ -294,6 +297,144 @@ static class SelfTest
     /// die Textzeile „Fletta Test“ in Helvetica für den Seitentext; ein Lesezeichen „Kapitel Zwei“ auf Seite 2.
     /// Seite 2 hat denselben Inhalt, trägt aber /Rotate 90 im PDF.
     /// </summary>
+    /// <summary>
+    /// Seiten bearbeiten und speichern. Vier Seiten mit Breiten 100–400 Punkt machen jede Seite an ihrer
+    /// Größe erkennbar; jede trägt ihren Namen als Text, damit sich prüfen lässt, was in der Datei steht.
+    /// </summary>
+    static int EditChecks(string twoPagesWithOutline, string dir)
+    {
+        var failures = 0;
+        var four = Path.Combine(dir, "vier Seiten.pdf");
+        File.WriteAllBytes(four, FourPagePdf());
+        double[] Widths(PdfDocument doc) => [.. Enumerable.Range(0, doc.PageCount).Select(page => doc.PageSize(page).Width)];
+
+        using (var doc = PdfDocument.Open(four))
+        {
+            var turns = new[] { 0, 1, 2, 3 };
+            var delete = new DeletePages([1, 3]);
+            delete.Apply(doc);
+            failures += Check("Löschen: Seiten 2 und 4 weg", Widths(doc).SequenceEqual([100.0, 300.0]));
+            failures += Check("Löschen: Drehungen folgen", delete.Remap(turns, doc.PageCount, 0).SequenceEqual([0, 2]));
+        }
+        using (var doc = PdfDocument.Open(four))
+        {
+            var move = MovePages.ToGap([2, 3], 0); // 3 und 4 an den Anfang
+            move.Apply(doc);
+            failures += Check("Verschieben an den Anfang", Widths(doc).SequenceEqual([300.0, 400.0, 100.0, 200.0]));
+            failures += Check("Verschieben: Drehungen folgen", move.Remap(new[] { 0, 1, 2, 3 }, 4, -1).SequenceEqual([2, 3, 0, 1]));
+            var back = MovePages.ToGap([0], 3); // Seite (jetzt 300) vor den vierten Eintrag
+            back.Apply(doc);
+            failures += Check("Verschieben in eine Lücke weiter hinten", Widths(doc).SequenceEqual([400.0, 100.0, 300.0, 200.0]));
+            failures += Check("Verschieben an dieselbe Stelle ändert nichts", !MovePages.ToGap([1, 2], 1).ChangesOrder(4) && !MovePages.ToGap([1, 2], 3).ChangesOrder(4));
+        }
+        using (var doc = PdfDocument.Open(four))
+        {
+            var insert = new InsertPages(twoPagesWithOutline, 1);
+            insert.Apply(doc);
+            failures += Check("Einfügen: zwei Seiten vor Seite 2", Widths(doc).SequenceEqual([100.0, 595.0, 842.0, 200.0, 300.0, 400.0]));
+            failures += Check("Einfügen: Drehungen folgen, neue ungedreht", insert.Remap(new[] { 1, 2, 3, 0 }, doc.PageCount, 0).SequenceEqual([1, 0, 0, 2, 3, 0]));
+
+            doc.Rotate(0, 1);
+            failures += Check("Drehen tauscht die Kanten", doc.PageSize(0) == new Size(500, 100));
+            doc.DeletePages([5]);
+            var saved = Path.Combine(dir, "gespeichert.pdf");
+            doc.SaveAs(saved);
+            using var reopened = PdfDocument.Open(saved);
+            failures += Check("Speichern: Seiten, Reihenfolge und Drehung bleiben",
+                Widths(reopened).SequenceEqual([500.0, 595.0, 842.0, 200.0, 300.0]));
+            // Nicht inkrementell geschrieben: eine gelöschte Seite darf nicht mehr in der Datei stehen.
+            // PDFium packt die Inhalte beim Speichern (FlateDecode), gesucht wird also im Entpackten.
+            var content = StreamText(saved);
+            failures += Check("Speichern: gelöschte Seite nicht mehr in der Datei", !content.Contains("Seite Vier"));
+            failures += Check("Speichern: übrige Seiten stehen noch drin", content.Contains("Seite Drei") && content.Contains("Seite Eins"));
+
+            var export = Path.Combine(dir, "Auszug.pdf");
+            doc.ExportPages([3, 4], [1, 0], export);
+            using var extract = PdfDocument.Open(export);
+            failures += Check("In neue PDF: zwei Seiten, erste wie in der Ansicht gedreht",
+                extract.PageCount == 2 && extract.PageSize(0) == new Size(500, 200) && extract.PageSize(1).Width == 300);
+            failures += Check("In neue PDF: Quelle unverändert", doc.PageCount == 5);
+        }
+        using (var doc = PdfDocument.Open(twoPagesWithOutline))
+        {
+            doc.Rotate(0, 1);
+            var saved = Path.Combine(dir, "mit Gliederung.pdf");
+            doc.SaveAs(saved);
+            using var reopened = PdfDocument.Open(saved);
+            failures += Check("Speichern behält Gliederung und /Rotate der zweiten Seite",
+                reopened.Outline().Count == 1 && reopened.PageSize(0) == new Size(842, 595) && reopened.PageSize(1) == new Size(842, 595));
+            failures += Check("keine Signaturen im Test-PDF", doc.SignatureCount == 0);
+        }
+        // Lesezeichen „Kapitel Zwei“ zeigt auf Seite 2: rückt nach, wenn Seite 1 fällt, und zeigt ins Leere, wenn Seite 2 fällt.
+        foreach (var (deleted, expected, name) in new[] { (0, 0, "rückt nach vorn"), (1, -1, "ohne Ziel") })
+        {
+            using var doc = PdfDocument.Open(twoPagesWithOutline);
+            doc.DeletePages([deleted]);
+            var saved = Path.Combine(dir, $"Gliederung ohne {deleted}.pdf");
+            doc.SaveAs(saved);
+            using var reopened = PdfDocument.Open(saved);
+            var outline = reopened.Outline();
+            failures += Check($"Lesezeichen nach Löschen: {name}", outline.Count == 1 && outline[0].Page == expected);
+        }
+        failures += Check("Einfügen einer kaputten Datei meldet FormatError", EditError(four, doc => doc.InsertFrom(Path.Combine(dir, "kaputt.pdf"), 0)) == PdfException.FormatError);
+        failures += Check("Verschieben außerhalb meldet EditError", EditError(four, doc => doc.MovePages([0], 9)) == PdfException.EditError);
+        using (var doc = PdfDocument.Open(four))
+        {
+            var empty = Path.Combine(dir, "leer.pdf");
+            var threw = false;
+            try { doc.ExportPages([], [], empty); }
+            catch (ArgumentOutOfRangeException) { threw = true; }
+            failures += Check("In neue PDF ohne Seiten: abgelehnt, keine Datei", threw && !File.Exists(empty));
+            // Speichern auf eine vorhandene Datei ersetzt sie ganz und lässt keine Temp-Datei liegen.
+            var target = Path.Combine(dir, "Ziel.pdf");
+            File.WriteAllText(target, "alt");
+            doc.ExportPages([0], [0], target);
+            failures += Check("In neue PDF ersetzt vorhandene Datei, ohne Temp-Rest",
+                File.ReadAllBytes(target).AsSpan(0, 4).SequenceEqual("%PDF"u8) && Directory.GetFiles(dir, "*.tmp").Length == 0);
+        }
+        return failures;
+    }
+
+    /// <summary>Alle Streams der Datei entpackt (oder roh, wenn nicht gepackt) hintereinander.</summary>
+    static string StreamText(string path)
+    {
+        var raw = Encoding.Latin1.GetString(File.ReadAllBytes(path));
+        var text = new StringBuilder();
+        foreach (Match m in Regex.Matches(raw, @"stream\r?\n(.*?)\r?\nendstream", RegexOptions.Singleline))
+        {
+            var bytes = Encoding.Latin1.GetBytes(m.Groups[1].Value);
+            try
+            {
+                using var inflate = new ZLibStream(new MemoryStream(bytes), CompressionMode.Decompress);
+                using var reader = new StreamReader(inflate, Encoding.Latin1);
+                text.Append(reader.ReadToEnd());
+            }
+            catch (InvalidDataException) { text.Append(m.Groups[1].Value); } // ungepackt
+        }
+        return text.ToString();
+    }
+
+    static uint EditError(string path, Action<PdfDocument> edit)
+    {
+        using var doc = PdfDocument.Open(path);
+        try { edit(doc); return 0; }
+        catch (PdfException e) { return e.Code; }
+    }
+
+    static byte[] FourPagePdf()
+    {
+        string[] names = ["Eins", "Zwei", "Drei", "Vier"];
+        const string resources = "/Resources << /Font << /F1 << /Type /Font /Subtype /Type1 /BaseFont /Helvetica >> >> >>";
+        var objects = new List<string> { "<< /Type /Catalog /Pages 2 0 R >>", $"<< /Type /Pages /Kids [{string.Join(" ", names.Select((_, i) => $"{3 + 2 * i} 0 R"))}] /Count 4 >>" };
+        for (var i = 0; i < names.Length; i++)
+        {
+            var content = $"BT /F1 12 Tf 10 250 Td (Seite {names[i]}) Tj ET";
+            objects.Add($"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 {100 * (i + 1)} 500] {resources} /Contents {4 + 2 * i} 0 R >>");
+            objects.Add($"<< /Length {content.Length} >>\nstream\n{content}\nendstream");
+        }
+        return Pdf(objects);
+    }
+
     static byte[] MinimalPdf()
     {
         const string content = "0 0 1 rg 100 100 395 642 re f 1 0 0 rg 20 752 70 70 re f BT 0 g /F1 18 Tf 110 780 Td (Fletta Test) Tj ET";
@@ -308,17 +449,23 @@ static class SelfTest
             "<< /Type /Outlines /First 7 0 R /Last 7 0 R /Count 1 >>",
             "<< /Title (Kapitel Zwei) /Parent 6 0 R /Dest [5 0 R /Fit] >>",
         ];
+        return Pdf(objects);
+    }
+
+    /// <summary>Objekte 1 … n in dieser Reihenfolge, Objekt 1 ist der Katalog.</summary>
+    static byte[] Pdf(IReadOnlyList<string> objects)
+    {
         var pdf = new StringBuilder("%PDF-1.7\n");
         var offsets = new List<int>();
-        for (var i = 0; i < objects.Length; i++)
+        for (var i = 0; i < objects.Count; i++)
         {
             offsets.Add(pdf.Length); // reines ASCII: Zeichen = Bytes
             pdf.Append($"{i + 1} 0 obj\n{objects[i]}\nendobj\n");
         }
         var xref = pdf.Length;
-        pdf.Append($"xref\n0 {objects.Length + 1}\n0000000000 65535 f \n");
+        pdf.Append($"xref\n0 {objects.Count + 1}\n0000000000 65535 f \n");
         foreach (var offset in offsets) pdf.Append($"{offset:D10} 00000 n \n");
-        pdf.Append($"trailer\n<< /Size {objects.Length + 1} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n");
+        pdf.Append($"trailer\n<< /Size {objects.Count + 1} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n");
         return Encoding.ASCII.GetBytes(pdf.ToString());
     }
 }
