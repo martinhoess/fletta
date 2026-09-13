@@ -136,6 +136,14 @@ static class SelfTest
         failures += Check("Miniaturen am Ende begrenzt", ThumbnailPanel.VisibleRange(197_900, 600, 200, 990) == (989, 989));
         failures += Check("Miniaturen ohne Seiten leer", ThumbnailPanel.VisibleRange(0, 600, 200, 0) == (0, -1));
 
+        // Nachbarseiten: A4 in Seitenbreite (1500 px) zwei je Richtung, bei 24 MP nur eine — außer bei
+        // Doppelseite, dort ist die kleinste Einheit eine Zeile aus zwei Seiten.
+        var small = new RenderRequest(0, 1500, 2121, 180, 180, 0);
+        var large = new RenderRequest(0, 4306, 5573, 520, 520, 0);
+        failures += Check("kleine Seitenbilder: zwei Nachbarn", MainWindow.NeighboursFor(small, spreads: false) == 2);
+        failures += Check("große Seitenbilder: ein Nachbar", MainWindow.NeighboursFor(large, spreads: false) == 1);
+        failures += Check("große Seitenbilder, Doppelseite: ganze Nachbarzeile", MainWindow.NeighboursFor(large, spreads: true) == 2);
+
         // Einstellungen: Hin und zurück durch JSON, kaputte Datei, Fenster außerhalb des Bildschirms.
         var saved = new AppSettings { Left = 100, Top = 50, Zoom = ZoomMode.FitPage, ZoomPercent = 150, Spreads = true, SidebarHidden = true };
         failures += Check("Einstellungen überstehen JSON", AppSettings.Parse(saved.ToJson()) == saved);

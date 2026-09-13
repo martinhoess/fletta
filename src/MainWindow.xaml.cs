@@ -16,8 +16,9 @@ namespace Fletta;
 
 public partial class MainWindow : Window
 {
-    const int KeepNeighbours = 2;             // so viele Seiten über und unter dem Sichtbaren bleiben gerendert
-    const long MaxPixelsPerPage = 24_000_000; // ~96 MB je Seite; darüber skaliert WPF hoch
+    const int KeepNeighbours = 2;             // so viele Seiten über und unter dem Sichtbaren bleiben gerendert,
+    const long LargePagePixels = 8_000_000;   // bei Bildern darüber (~30 MB, starker Zoom) nur eine
+    const long MaxPixelsPerPage = 24_000_000; // ~91 MB je Seite; darüber skaliert WPF hoch
     const int WheelNotch = 120;               // Mausrad-Rastung; Touchpads liefern Bruchteile davon
     const double CopyDpi = 200;               // Bild in der Zwischenablage: scharf genug für Mail und Word
     static readonly int[] ZoomMenuSteps = [.. PageLayout.ZoomSteps.Where(z => z >= 50 && z % 25 == 0)];
@@ -69,6 +70,7 @@ public partial class MainWindow : Window
     readonly Stack<PageSlot> spareSlots = [];
     readonly Dictionary<int, RenderResult> rendered = []; // nur erfolgreiche: Bild samt Auftrag, zu dem es gehört
     readonly Dictionary<int, string> pageErrors = [];
+    long droppedPixels; // verworfene Seitenbilder seit dem letzten Anstoß des GC, siehe Discard
     bool measurePending;
     bool wasMaximized;     // letzter Zustand vor dem Minimieren, den merkt sich Fletta
     bool outlineRequested; // erstes Ergebnis der Hauptansicht ist da: jetzt Gliederung und Miniaturen
@@ -398,10 +400,14 @@ public partial class MainWindow : Window
             if (!slots.TryGetValue(page, out var slot)) slots[page] = slot = TakeSlot();
             Place(slot, page);
         }
-        foreach (var page in rendered.Keys.Where(p => p < first - KeepNeighbours || p > last + KeepNeighbours).ToList())
+        var neighbours = NeighboursFor(RequestFor(first), spreads);
+        foreach (var page in rendered.Keys.Where(p => p < first - neighbours || p > last + neighbours).ToList())
+        {
+            Discard(rendered[page]);
             rendered.Remove(page);
+        }
 
-        mainWanted = Wanted(first, last);
+        mainWanted = Wanted(first, last, neighbours);
         RequestRenders();
         // Festgehalten (Sprung, Zoom, Drehen): die Seite bleibt aktuell, bis jemand selbst scrollt —
         // auch wenn sie am Dokumentende nicht nach oben rollen kann.
@@ -447,11 +453,20 @@ public partial class MainWindow : Window
         slot.Frame.Visibility = Visibility.Visible;
     }
 
+    /// <summary>
+    /// Nachbarn je Richtung, die gerendert bereitliegen. Große Bilder nur eine Seite weit: ein 24-MP-Bild
+    /// belegt 91 MB. Ganz ohne Nachbarn stünde die nächste Seite zu lange weiß da — eine Handbuchseite
+    /// braucht bei 24 MP knapp 0,9 s (Ryzen 7 5800X, gemessen 2026-09-13). Bei Doppelseite bleibt es
+    /// bei zwei: eine Seite wäre dort nur die halbe Nachbarzeile.
+    /// </summary>
+    internal static int NeighboursFor(RenderRequest page, bool spreads) =>
+        !spreads && (long)page.PixelWidth * page.PixelHeight > LargePagePixels ? 1 : KeepNeighbours;
+
     /// <summary>Sichtbare Seiten zuerst, von der Mitte aus; dann die Nachbarn. Was schon scharf da ist, fehlt.</summary>
-    RenderRequest[] Wanted(int first, int last)
+    RenderRequest[] Wanted(int first, int last, int neighbours)
     {
         var centre = (first + last) / 2.0;
-        return Enumerable.Range(first - KeepNeighbours, last - first + 1 + 2 * KeepNeighbours)
+        return Enumerable.Range(first - neighbours, last - first + 1 + 2 * neighbours)
             .Where(p => p >= 0 && p < layout!.Count && !pageErrors.ContainsKey(p))
             .OrderBy(p => p < first || p > last)
             .ThenBy(p => Math.Abs(p - centre))
@@ -496,9 +511,17 @@ public partial class MainWindow : Window
         var wanted = RequestFor(page);
         // Aus einer älteren Zoomstufe, während die passende Größe schon da ist: sonst überschreibt
         // ein 110-%-Bild das scharfe 100-%-Bild, nachdem man schnell wieder zurückgezoomt hat.
-        if (result.Request != wanted && IsSharp(wanted)) return;
+        if (result.Request != wanted && IsSharp(wanted))
+        {
+            if (result.Bitmap is not null) Discard(result);
+            return;
+        }
 
-        if (result.Bitmap is not null) rendered[page] = result;
+        if (result.Bitmap is not null)
+        {
+            if (rendered.TryGetValue(page, out var old)) Discard(old);
+            rendered[page] = result;
+        }
         else pageErrors[page] = result.Error ?? "";
         if (slots.TryGetValue(page, out var slot)) Place(slot, page);
         if (result.Bitmap is not null) App.Mark("seite");
@@ -511,6 +534,25 @@ public partial class MainWindow : Window
             RequestRenders(); // jetzt auch die Miniaturen
         }
         FinishMeasure();
+    }
+
+    /// <summary>
+    /// Ein Seitenbild fällt weg. Seinen Speicher gibt WPF erst frei, wenn der GC es einsammelt, und der
+    /// kommt bei kleinem verwaltetem Heap lange nicht: auf der Test-VM blieben nach Blättern bei 400 %
+    /// und Zurückzoomen auf 25 % 505 MB belegt (2026-09-13). Nach etwa einem großen Bild daher selbst
+    /// anstoßen — im Hintergrund und erst nach dem Zeichnen, bis dahin hängt das alte Bild noch am Element.
+    /// Eingeplant wird nur beim Überschreiten der Schwelle, also höchstens ein Anstoß auf einmal.
+    /// </summary>
+    void Discard(RenderResult old)
+    {
+        var before = droppedPixels;
+        droppedPixels += (long)old.Request.PixelWidth * old.Request.PixelHeight;
+        if (before >= MaxPixelsPerPage || droppedPixels < MaxPixelsPerPage) return;
+        Dispatcher.InvokeAsync(() =>
+        {
+            droppedPixels = 0;
+            GC.Collect(GC.MaxGeneration, GCCollectionMode.Forced, blocking: false);
+        }, DispatcherPriority.ContextIdle);
     }
 
     /// <summary>--measure: nach dem ersten Ergebnis berichten und schließen, auch im Fehlerfall — sonst hängt measure.ps1.</summary>
