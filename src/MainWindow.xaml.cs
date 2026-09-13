@@ -586,7 +586,7 @@ public partial class MainWindow : Window
     }
 
     /// <summary>
-    /// Hauptansicht zuerst, dahinter die Miniaturen — beide über denselben Render-Thread. Was seit dem
+    /// Hauptansicht zuerst, die Miniaturen dahinter bzw. direkt hinter ihrer Hauptseite (Interleave) — beide über denselben Render-Thread. Was seit dem
     /// letzten UpdateView scharf angekommen oder fehlgeschlagen ist, fällt heraus; sonst rendert der
     /// Thread beim Scrollen der Seitenleiste die Hauptseiten immer wieder neu. Miniaturen erst nach
     /// dem ersten Ergebnis der Hauptansicht: ihre Wünsche kommen beim ersten Layout früher an und
@@ -595,8 +595,26 @@ public partial class MainWindow : Window
     void RequestRenders()
     {
         if (busy) return; // Seitennummern der Leiste und der Ansicht passen erst nach ShowPages wieder zum Dokument
-        renderer?.Request([.. mainWanted.Where(r => !IsSharp(r) && !pageErrors.ContainsKey(r.Page)),
-                           .. outlineRequested ? Thumbs.Wanted() : []]);
+        renderer?.Request(Interleave([.. mainWanted.Where(r => !IsSharp(r) && !pageErrors.ContainsKey(r.Page))],
+                                     outlineRequested ? [.. Thumbs.Wanted()] : []));
+    }
+
+    /// <summary>
+    /// Hauptseiten in ihrer Reihenfolge, die Miniatur derselben Seite jeweils direkt dahinter — die Seite ist dann
+    /// noch offen (PdfDocument.KeepPagesOpen), ~30 statt ~160 ms. Die übrigen Miniaturen danach. Im Selbsttest geprüft.
+    /// </summary>
+    internal static RenderRequest[] Interleave(RenderRequest[] main, RenderRequest[] thumbs)
+    {
+        var byPage = thumbs.ToLookup(thumb => thumb.Page);
+        var paired = new HashSet<int>();
+        var queue = new List<RenderRequest>(main.Length + thumbs.Length);
+        foreach (var request in main)
+        {
+            queue.Add(request);
+            if (paired.Add(request.Page)) queue.AddRange(byPage[request.Page]);
+        }
+        queue.AddRange(thumbs.Where(thumb => !paired.Contains(thumb.Page)));
+        return [.. queue];
     }
 
     /// <summary>Liegt für die Seite schon ein Bild zu genau diesem Auftrag vor (Größe, DPI, Drehung)?</summary>

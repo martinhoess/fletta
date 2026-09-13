@@ -138,6 +138,19 @@ static class SelfTest
         failures += Check("Miniaturen Mitte", ThumbnailPanel.VisibleRange(1000, 600, 200, 990) == (5, 8));
         failures += Check("Miniaturen am Ende begrenzt", ThumbnailPanel.VisibleRange(197_900, 600, 200, 990) == (989, 989));
         failures += Check("Miniaturen ohne Seiten leer", ThumbnailPanel.VisibleRange(0, 600, 200, 0) == (0, -1));
+        // Vorab gerendert: sichtbare, dann in Scrollrichtung, dann ein paar dagegen — je nach Abstand.
+        var down = ThumbnailPanel.PrefetchOrder(100, 102, 990, up: false).ToArray();
+        failures += Check("Miniaturen vorab nach unten", down.Take(5).SequenceEqual([100, 101, 102, 103, 104])
+                          && down.Length == 3 + ThumbnailPanel.PrefetchAhead + ThumbnailPanel.PrefetchBehind && down[^1] == 100 - ThumbnailPanel.PrefetchBehind);
+        var up = ThumbnailPanel.PrefetchOrder(100, 102, 990, up: true).ToArray();
+        failures += Check("Miniaturen vorab nach oben", up.Take(5).SequenceEqual([100, 101, 102, 99, 98]) && up[^1] == 102 + ThumbnailPanel.PrefetchBehind);
+        RenderRequest Main(int page) => new(page, 100, 100, 96, 96, 0);
+        RenderRequest Thumb(int page) => new(page, 10, 10, 96, 96, 0, Thumbnail: true);
+        failures += Check("Miniatur direkt hinter ihrer Hauptseite, übrige danach",
+            MainWindow.Interleave([Main(5), Main(6), Main(4)], [Thumb(4), Thumb(5), Thumb(9)])
+                .SequenceEqual([Main(5), Thumb(5), Main(6), Main(4), Thumb(4), Thumb(9)]));
+        failures += Check("Miniaturen vorab an den Enden begrenzt", ThumbnailPanel.PrefetchOrder(0, 1, 3, up: false).SequenceEqual([0, 1, 2])
+                          && !ThumbnailPanel.PrefetchOrder(0, -1, 0, up: false).Any());
 
         // Nachbarseiten: A4 in Seitenbreite (1500 px) zwei je Richtung, bei 24 MP nur eine — außer bei
         // Doppelseite, dort ist die kleinste Einheit eine Zeile aus zwei Seiten.
@@ -354,6 +367,28 @@ static class SelfTest
             failures += Check("In neue PDF: zwei Seiten, erste wie in der Ansicht gedreht",
                 extract.PageCount == 2 && extract.PageSize(0) == new Size(500, 200) && extract.PageSize(1).Width == 300);
             failures += Check("In neue PDF: Quelle unverändert", doc.PageCount == 5);
+        }
+        using (var doc = PdfDocument.Open(four))
+        {
+            // Offene Seiten (PdfDocument.KeepPagesOpen): mehrfach gerendert keine Doppelten, nach oben begrenzt, und nach
+            // jeder Änderung lebt keine Seite unter ihrem alten Index weiter — dafür vorher genau diese Indizes öffnen.
+            for (var round = 0; round < 3; round++) doc.Render(2, 10, 10, 72, 72, 0);
+            failures += Check("Seitenvorrat: jede Seite nur einmal offen", doc.OpenPageCount == 1);
+            doc.PageText(0); doc.PageText(1);
+            doc.MovePages([2], 0); // Drei Eins Zwei Vier
+            failures += Check("Seitenvorrat nach Verschieben", doc.PageText(0).Contains("Seite Drei") && doc.PageText(1).Contains("Seite Eins"));
+            doc.DeletePages([0]); // Eins Zwei Vier
+            failures += Check("Seitenvorrat nach Löschen", doc.PageText(0).Contains("Seite Eins") && doc.PageText(1).Contains("Seite Zwei"));
+            doc.InsertFrom(four, 1); // Eins [Eins Zwei Drei Vier] Zwei Vier
+            failures += Check("Seitenvorrat nach Einfügen", doc.PageText(1).Contains("Seite Eins") && doc.PageText(0).Contains("Seite Eins") && doc.PageCount == 7);
+            doc.Rotate(1, 1);
+            failures += Check("Seitenvorrat nach Drehen leer", doc.OpenPageCount == 0);
+            doc.ReleasePages();
+            for (var copy = 0; copy < 5; copy++) doc.InsertFrom(four, 0);
+            for (var page = 0; page < doc.PageCount; page++) doc.Render(page, 10, 10, 72, 72, 0);
+            failures += Check("Seitenvorrat: begrenzt", doc.PageCount == 27 && doc.OpenPageCount == PdfDocument.KeepPagesOpen);
+            doc.ReleasePages();
+            failures += Check("Seitenvorrat: im Leerlauf freigegeben", doc.OpenPageCount == 0);
         }
         using (var doc = PdfDocument.Open(twoPagesWithOutline))
         {

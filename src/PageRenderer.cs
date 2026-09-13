@@ -143,6 +143,7 @@ public sealed class PageRenderer : IDisposable
                 {
                     App.Mark("aufgabe");
                     task.Run(document);
+                    if (Idle()) document.ReleasePages();
                     continue;
                 }
                 App.Mark(job.Thumbnail ? "auftrag miniatur" : "auftrag seite");
@@ -162,8 +163,14 @@ public sealed class PageRenderer : IDisposable
                     lock (gate) inFlight.Remove(result.Request);
                     if (!stopped) deliver(result);
                 });
+                if (Idle()) document.ReleasePages(); // nichts mehr zu tun: offene Seiten nicht festhalten
             }
         }
+    }
+
+    bool Idle()
+    {
+        lock (gate) return queue.Length == 0 && jobs.Count == 0;
     }
 
     /// <summary>Nächste Aufgabe (zuerst) oder nächster Bildauftrag; false, sobald gestoppt.</summary>

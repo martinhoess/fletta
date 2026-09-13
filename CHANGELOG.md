@@ -2,6 +2,10 @@
 
 Die Release-CI übernimmt den Abschnitt der jeweiligen Version als Text des GitHub-Releases.
 
+## 0.12.3
+
+- Miniaturen sind beim Durchscrollen großer PDFs schneller da: vorab gerendert wird vor allem in Scrollrichtung, und die Miniatur einer Seite entsteht direkt nach der Seite selbst, solange sie noch geladen ist.
+
 ## 0.12.2
 
 - Die Miniaturenleiste folgt der aktuellen Seite zuverlässig: die aktuelle Miniatur steht immer ganz im Bild, auch am Dokumentende.
