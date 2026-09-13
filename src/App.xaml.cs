@@ -76,6 +76,20 @@ public partial class App : Application
         lock (marks) return string.Join(" · ", marks.Select(m => $"{m.Label} {m.Ms:F0} ms"));
     }
 
+    /// <summary>
+    /// Meldet das Fenster bei Windows für den Neustart nach einem Update an, samt der offenen Datei — das
+    /// Setup (/RESTARTAPPLICATIONS) öffnet es danach wieder. Nicht nach Absturz, Hänger oder Neustart des
+    /// Rechners. Ein leeres Fenster braucht ein Argument: eine leere Befehlszeile hebt die Anmeldung auf,
+    /// „--restarted“ übergeht OnStartup wie jedes unbekannte Schalter-Argument.
+    /// </summary>
+    public static void RegisterRestart(string? path) =>
+        RegisterApplicationRestart(path is null ? "--restarted" : $"\"{path}\"", RestartNoCrash | RestartNoHang | RestartNoReboot);
+
+    const int RestartNoCrash = 1, RestartNoHang = 2, RestartNoReboot = 8;
+
+    [LibraryImport("kernel32.dll", StringMarshalling = StringMarshalling.Utf16)]
+    private static partial int RegisterApplicationRestart(string commandLine, int flags);
+
     const uint AttachParentProcess = unchecked((uint)-1);
 
     [LibraryImport("kernel32.dll")]
