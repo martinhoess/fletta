@@ -1,0 +1,38 @@
+# Änderungen
+
+Die Release-CI übernimmt den Abschnitt der jeweiligen Version als Text des GitHub-Releases.
+
+## 0.12.1
+
+- Mausrad über den Miniaturen scrollt das Dokument; die Leiste folgt der aktuellen Seite.
+- Ungespeicherte Änderungen zeigt ein Speichern-Knopf oben rechts in der Werkzeugleiste.
+- Rückfragen („Änderungen speichern?“, Warnung bei signierten PDFs) im Stil von Fletta statt der hellen Windows-Meldung.
+- Setup: Umlaute statt Umschreibungen („Standard-Apps öffnen“).
+
+## 0.12.0
+
+- Seiten bearbeiten über die Miniaturen: löschen, drehen, umsortieren, in eine neue PDF kopieren oder verschieben, eine PDF davor oder dahinter einfügen – per Rechtsklick-Menü oder Ziehen und Ablegen.
+- Seiten aus der Leiste in den Explorer oder ein anderes Fletta-Fenster ziehen (Umschalt verschiebt).
+- Änderungen werden gesammelt: `Strg+Z` nimmt zurück, `Strg+S` schreibt sie samt Drehungen in die Datei.
+- Rückfrage beim Schließen mit ungespeicherten Änderungen, Warnung vor dem Speichern signierter PDFs.
+
+## 0.11.0
+
+- Update über GitHub: Fletta sieht höchstens einmal täglich nach, „Aktualisieren“ lädt das Setup, prüft die Prüfsumme und öffnet die PDFs danach wieder.
+
+## 0.10.1
+
+- Weniger Speicher bei starkem Zoom: weniger vorgerenderte Nachbarseiten, verworfene Seitenbilder werden freigegeben.
+
+## 0.10.0
+
+- Drucken über den Windows-Druckdialog mit echter Vorschau und Seitenbereichen; markierte Miniaturen sind vorbelegt.
+- Speicherlecks behoben: Seiten und ausgeblendete Miniaturen halten ihre Bilder nicht mehr fest.
+
+## 0.9.1
+
+- Setup: offene Fenster werden beim Deinstallieren beendet, der Programmordner bleibt nicht mehr liegen.
+
+## 0.9.0
+
+- Erste Version: ein Fenster pro PDF, Seitenleiste mit Miniaturen und Gliederung, Zoom, Drehen in der Ansicht, Doppelseite und seitenweises Blättern, Drucken, Seite als Bild und Text kopieren.

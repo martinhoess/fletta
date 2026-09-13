@@ -44,6 +44,10 @@
         <Rectangle Style="{StaticResource ToolSeparator}" />
         <Button Style="{StaticResource ToolButton}" Content="{StaticResource IconHelp}" ToolTip="Tastenkürzel (F1 oder ?)" Click="OnHelpClick" />
       </StackPanel>
+      <!-- Nur mit ungespeicherten Änderungen sichtbar (wie „●“ im Titel); Klick speichert. -->
+      <Button x:Name="SaveButton" Style="{StaticResource ToolButton}" Content="{StaticResource IconSave}"
+              Foreground="{StaticResource UnsavedBrush}" HorizontalAlignment="Right" Margin="0,0,8,0"
+              Visibility="Collapsed" ToolTip="Ungespeicherte Änderungen – speichern (Strg+S)" Click="OnSaveClick" />
       </Grid>
     </Border>
 

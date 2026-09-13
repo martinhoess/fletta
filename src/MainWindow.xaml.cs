@@ -144,7 +144,7 @@ public partial class MainWindow : Window
         SetDocumentControls(false);
         SourceInitialized += (_, _) =>
         {
-            ApplyDarkCaption();
+            ApplyDarkCaption(this);
             dpi = VisualTreeHelper.GetDpi(this);
             Thumbs.Dpi = dpi;
         };
@@ -233,9 +233,10 @@ public partial class MainWindow : Window
     /// <summary>Für App.OnSessionEnding: Abmelden oder Herunterfahren soll die Änderungen nicht stillschweigend verwerfen.</summary>
     public bool HasUnsavedEdits => edits.Count > 0;
 
-    /// <summary>Nach jeder Änderung an edits: Titel und prozessübergreifendes Signal nachführen.</summary>
+    /// <summary>Nach jeder Änderung an edits: Titel, Speichern-Knopf und prozessübergreifendes Signal nachführen.</summary>
     void EditsChanged()
     {
+        SaveButton.Visibility = edits.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
         if (edits.Count > 0) unsavedSignal ??= new EventWaitHandle(false, EventResetMode.ManualReset, UnsavedSignal);
         else
         {
@@ -858,6 +859,7 @@ public partial class MainWindow : Window
 
     void OnOpenClick(object sender, RoutedEventArgs e) => PickFile();
     void OnPrintClick(object sender, RoutedEventArgs e) => Print();
+    void OnSaveClick(object sender, RoutedEventArgs e) => _ = Save();
     void OnCopyClick(object sender, RoutedEventArgs e) => CopyPage(textOnly: false);
     void OnRotateLeftClick(object sender, RoutedEventArgs e) => Rotate(-1);
     void OnRotateRightClick(object sender, RoutedEventArgs e) => Rotate(+1);
@@ -1024,8 +1026,15 @@ public partial class MainWindow : Window
     {
         if (Keyboard.Modifiers != ModifierKeys.Control)
         {
-            // Seitenweise: nur über dem Seitenbereich, die Seitenleiste scrollt normal.
-            if (paged && layout is not null && Scroller.IsMouseOver) FlipWithWheel(e);
+            // Über den Miniaturen bewegt das Rad das Dokument, die Leiste folgt der aktuellen Seite (Martin,
+            // 2026-09-13). Die Gliederung scrollt weiter selbst.
+            var overThumbs = Thumbs.IsMouseOver && layout is not null;
+            if (paged && layout is not null && (Scroller.IsMouseOver || overThumbs)) FlipWithWheel(e);
+            else if (overThumbs)
+            {
+                e.Handled = true;
+                Scroller.RaiseEvent(new MouseWheelEventArgs(e.MouseDevice, e.Timestamp, e.Delta) { RoutedEvent = MouseWheelEvent });
+            }
             else base.OnPreviewMouseWheel(e);
             return;
         }
@@ -1412,8 +1421,8 @@ public partial class MainWindow : Window
         try
         {
             if (await opening.Invoke(document => document.SignatureCount) > 0 &&
-                MessageBox.Show(this, $"„{fileName}“ ist digital signiert. Speichern macht die Signatur ungültig.\n\nTrotzdem speichern?",
-                                "Fletta", MessageBoxButton.YesNo, MessageBoxImage.Warning) != MessageBoxResult.Yes)
+                AskDialog.Show(this, $"„{fileName}“ ist digital signiert. Speichern macht die Signatur ungültig.",
+                               "Trotzdem speichern", "Abbrechen") != 0)
                 return false;
             ShowNotice("Speichere …");
             noticeTimer.Stop(); // bleibt stehen, bis „gespeichert“ oder ein Fehler ihn ersetzt
@@ -1480,9 +1489,9 @@ public partial class MainWindow : Window
     /// <summary>Schließen mit ungespeicherten Änderungen: speichern, verwerfen oder abbrechen.</summary>
     async void ConfirmClose()
     {
-        var answer = MessageBox.Show(this, $"Änderungen an „{fileName}“ speichern?", "Fletta",
-                                     MessageBoxButton.YesNoCancel, MessageBoxImage.Question);
-        if (answer == MessageBoxResult.Cancel || (answer == MessageBoxResult.Yes && !await Save())) return;
+        const int SaveChoice = 0, CancelChoice = 2;
+        var answer = AskDialog.Show(this, $"Änderungen an „{fileName}“ speichern?", "Speichern", "Nicht speichern", "Abbrechen");
+        if (answer == CancelChoice || (answer == SaveChoice && !await Save())) return;
         closeConfirmed = true;
         // Bei „Nein“ liefe Close sonst noch innerhalb von OnClosing — WPF wirft dann, und der Prozess stürzt ab.
         _ = Dispatcher.InvokeAsync(Close);
@@ -1532,9 +1541,9 @@ public partial class MainWindow : Window
     const int DwmUseImmersiveDarkMode = 20, DwmCaptionColor = 35;
     const int CaptionColorRef = 0x001C1E1B; // #1B1E1C als COLORREF 0x00BBGGRR
 
-    void ApplyDarkCaption()
+    internal static void ApplyDarkCaption(Window window)
     {
-        var hwnd = new WindowInteropHelper(this).Handle;
+        var hwnd = new WindowInteropHelper(window).Handle;
         DwmSetWindowAttribute(hwnd, DwmUseImmersiveDarkMode, 1, sizeof(int));
         DwmSetWindowAttribute(hwnd, DwmCaptionColor, CaptionColorRef, sizeof(int));
     }

@@ -40,6 +40,7 @@ Fletta.exe --measure datei   öffnet, rendert, schreibt die Zeitmarken auf stder
 |---|---|
 | `R` / `L` | rechts / links drehen: markierte Miniaturen, sonst die aktuelle Seite (Ansicht; `Strg+S` schreibt es in die Datei) |
 | Rechtsklick auf Miniaturen | drehen, löschen, in neue PDF kopieren oder verschieben, PDF davor oder dahinter einfügen |
+| Mausrad über den Miniaturen | scrollt das Dokument, die Leiste folgt der aktuellen Seite |
 | Miniaturen ziehen | umsortieren; hinaus in den Explorer oder ein anderes Fenster kopiert sie als neue PDF, mit Umschalt verschoben |
 | PDF auf die Miniaturen ziehen | ihre Seiten an dieser Stelle einfügen |
 | Entf | markierte Miniaturen löschen, sonst die aktuelle Seite |
@@ -62,7 +63,8 @@ Fletta.exe --measure datei   öffnet, rendert, schreibt die Zeitmarken auf stder
 | Strg+Umschalt+C | nur den Text der aktuellen Seite |
 | Esc | Mehrfachauswahl aufheben, sonst Fenster schließen |
 
-Änderungen sammelt Fletta, bis gespeichert wird; der Fenstertitel zeigt dann „●“, und beim Schließen
+Änderungen sammelt Fletta, bis gespeichert wird; der Fenstertitel zeigt dann „●“, oben rechts steht ein
+Speichern-Knopf, und beim Schließen
 fragt Fletta nach. Beim Speichern verschwinden gelöschte Seiten wirklich aus der Datei. Lesezeichen
 bleiben erhalten, zeigen aber ins Leere, wenn ihre Seite gelöscht wurde; digital signierte PDFs verlieren
 beim Speichern ihre Signatur (Fletta warnt vorher).

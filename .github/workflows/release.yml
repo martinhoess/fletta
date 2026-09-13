@@ -28,6 +28,14 @@ jobs:
           if ($v -notmatch '^\d+\.\d+\.\d+$') { throw "Version '$v' ist nicht x.y.z (Inno braucht Zahlen)" }
           $pre = $env:GITHUB_REF_NAME -eq "v$v-pre"
           if ($env:GITHUB_REF_TYPE -eq 'tag' -and $env:GITHUB_REF_NAME -ne "v$v" -and -not $pre) { throw "Tag $env:GITHUB_REF_NAME passt nicht zu <Version>$v (oder v$v-pre)" }
+          # Text des Releases: der Abschnitt „## X.Y.Z“ aus CHANGELOG.md, ohne ihn kein Release. Von Hand gestartet
+          # (nur das Setup als Artefakt) braucht es ihn nicht.
+          if ($env:GITHUB_REF_TYPE -eq 'tag') {
+            $notes = (Get-Content CHANGELOG.md -Raw -Encoding utf8) -split '(?m)^## ' |
+              Where-Object { $_ -match "^$([regex]::Escape($v))\r?\n" } | Select-Object -First 1
+            if (-not "$notes".Trim()) { throw "CHANGELOG.md hat keinen Abschnitt '## $v'" }
+            ($notes -replace '^.*\r?\n', '').Trim() | Set-Content notes.md -Encoding utf8
+          }
           "version=$v" >> $env:GITHUB_OUTPUT
           "prerelease=$pre" >> $env:GITHUB_OUTPUT
 
@@ -54,4 +62,4 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         # Das Flag als Actions-Ausdruck (true/false): in PowerShell zerfiele ein bedingtes Feld beim Splatting in Zeichen.
-        run: gh release create $env:GITHUB_REF_NAME (Get-Item dist\*.exe).FullName --title $env:GITHUB_REF_NAME --generate-notes --prerelease=${{ steps.ver.outputs.prerelease == 'True' }}
+        run: gh release create $env:GITHUB_REF_NAME (Get-Item dist\*.exe).FullName --title $env:GITHUB_REF_NAME --notes-file notes.md --prerelease=${{ steps.ver.outputs.prerelease == 'True' }}
