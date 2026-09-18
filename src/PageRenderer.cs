@@ -7,10 +7,11 @@ namespace Fletta;
 
 /// <summary>
 /// Pixelgröße ist die angezeigte, also schon gedrehte Größe; QuarterTurns 0–3 im Uhrzeigersinn.
-/// Thumbnail trennt die Aufträge der Seitenleiste von denen der Hauptansicht.
+/// Thumbnail trennt die Aufträge der Seitenleiste von denen der Hauptansicht. Revision zählt die Anmerkungen, die seit
+/// dem Laden auf die Seite kamen: ein Bild mit älterer Revision ist nicht mehr scharf und wird neu bestellt.
 /// </summary>
 public readonly record struct RenderRequest(int Page, int PixelWidth, int PixelHeight, double DpiX, double DpiY,
-                                           int QuarterTurns, bool Thumbnail = false);
+                                           int QuarterTurns, bool Thumbnail = false, int Revision = 0);
 
 public sealed record RenderResult(RenderRequest Request, BitmapSource? Bitmap, string? Error);
 

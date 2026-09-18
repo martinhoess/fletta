@@ -4,7 +4,7 @@ namespace Fletta.Pdfium;
 
 /// <summary>
 /// Nur die PDFium-Funktionen, die Fletta braucht. Signaturen aus den Headern von chromium/8044 (fpdfview.h und die
-/// jeweils genannten fpdf_*.h).
+/// jeweils genannten fpdf_*.h, darunter fpdf_annot.h).
 /// FPDF_BOOL ist ein int, daher MarshalAs(Bool) mit 4 Byte.
 /// </summary>
 internal static partial class Native
@@ -68,6 +68,16 @@ internal static partial class Native
 
     [LibraryImport(Dll)]
     internal static partial void FPDFBitmap_Destroy(nint bitmap);
+
+    /// <summary>Puffer gehört PDFium; alpha ≠ 0 ergibt BGRA.</summary>
+    [LibraryImport(Dll)]
+    internal static partial nint FPDFBitmap_Create(int width, int height, int alpha);
+
+    [LibraryImport(Dll)]
+    internal static partial nint FPDFBitmap_GetBuffer(nint bitmap);
+
+    [LibraryImport(Dll)]
+    internal static partial int FPDFBitmap_GetStride(nint bitmap);
 
     /// <summary>Nur unter Windows: rendert auf ein Geräte-HDC (Bildschirm, Bitmap oder Drucker).</summary>
     [LibraryImport(Dll)]
@@ -230,6 +240,144 @@ internal static partial class Native
 
     [LibraryImport(Dll)]
     internal static partial void FPDFLink_CloseWebLinks(nint linkPage);
+
+    /// <summary>Umkehrung von FPDF_PageToDevice: Rasterpunkt der angezeigten Seite in Seitenkoordinaten.</summary>
+    [LibraryImport(Dll)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static partial bool FPDF_DeviceToPage(nint page, int startX, int startY, int sizeX, int sizeY, int rotate,
+                                                   int deviceX, int deviceY, out double pageX, out double pageY);
+
+    /// <summary>Zeichenkasten nach Schriftgröße (ganze Zeilenhöhe), in Seitenkoordinaten; Nummer der Zeichenliste.</summary>
+    [LibraryImport(Dll)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static partial bool FPDFText_GetLooseCharBox(nint textPage, int index, out RectF rect);
+
+    // fpdf_annot.h — Anmerkungen (alles „experimental“ in PDFium)
+
+    [StructLayout(LayoutKind.Sequential)]
+    internal struct PointF
+    {
+        public float X;
+        public float Y;
+    }
+
+    /// <summary>FS_QUADPOINTSF: 1 oben links, 2 oben rechts, 3 unten links, 4 unten rechts.</summary>
+    [StructLayout(LayoutKind.Sequential)]
+    internal struct QuadPointsF
+    {
+        public float X1, Y1, X2, Y2, X3, Y3, X4, Y4;
+    }
+
+    internal const int AnnotText = 1, AnnotLink = 2, AnnotFreeText = 3, AnnotSquare = 5, AnnotHighlight = 9, AnnotUnderline = 10,
+                       AnnotStrikeOut = 12, AnnotStamp = 13, AnnotInk = 15, AnnotPopup = 16, AnnotWidget = 20;
+    internal const int AnnotFlagPrint = 4, AnnotFlagNoZoom = 8, AnnotFlagNoRotate = 16; // FPDF_ANNOT_FLAG_*
+    internal const int ColorStroke = 0; // FPDFANNOT_COLORTYPE_Color
+
+    [LibraryImport(Dll)]
+    internal static partial nint FPDFPage_CreateAnnot(nint page, int subtype);
+
+    [LibraryImport(Dll)]
+    internal static partial int FPDFPage_GetAnnotCount(nint page);
+
+    [LibraryImport(Dll)]
+    internal static partial nint FPDFPage_GetAnnot(nint page, int index);
+
+    [LibraryImport(Dll)]
+    internal static partial int FPDFPage_GetAnnotIndex(nint page, nint annot);
+
+    /// <summary>Gibt nur die Hülle frei, die Anmerkung bleibt im Dokument.</summary>
+    [LibraryImport(Dll)]
+    internal static partial void FPDFPage_CloseAnnot(nint annot);
+
+    [LibraryImport(Dll)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static partial bool FPDFPage_RemoveAnnot(nint page, int index);
+
+    [LibraryImport(Dll)]
+    internal static partial int FPDFAnnot_GetSubtype(nint annot);
+
+    /// <summary>Scheitert, wenn die Anmerkung schon eine Erscheinung (AP) hat.</summary>
+    [LibraryImport(Dll)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static partial bool FPDFAnnot_SetColor(nint annot, int type, uint r, uint g, uint b, uint a);
+
+    [LibraryImport(Dll)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static partial bool FPDFAnnot_SetRect(nint annot, in RectF rect);
+
+    [LibraryImport(Dll)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static partial bool FPDFAnnot_GetRect(nint annot, out RectF rect);
+
+    [LibraryImport(Dll)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static partial bool FPDFAnnot_AppendAttachmentPoints(nint annot, in QuadPointsF quadPoints);
+
+    /// <summary>Index des neuen Strichs, −1 bei Fehler. Nur für Ink.</summary>
+    [LibraryImport(Dll)]
+    internal static unsafe partial int FPDFAnnot_AddInkStroke(nint annot, PointF* points, nuint pointCount);
+
+    [LibraryImport(Dll)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static partial bool FPDFAnnot_SetBorder(nint annot, float horizontalRadius, float verticalRadius, float borderWidth);
+
+    /// <summary>Wert als UTF-16LE mit Terminator; key in UTF-8 (etwa „Contents“).</summary>
+    [LibraryImport(Dll, StringMarshalling = StringMarshalling.Utf8)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static unsafe partial bool FPDFAnnot_SetStringValue(nint annot, string key, char* value);
+
+    /// <summary>Bytes samt Terminator (UTF-16LE); buffer darf null sein.</summary>
+    [LibraryImport(Dll, StringMarshalling = StringMarshalling.Utf8)]
+    internal static unsafe partial uint FPDFAnnot_GetStringValue(nint annot, string key, void* buffer, uint bufferLength);
+
+    [LibraryImport(Dll)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static partial bool FPDFAnnot_SetFlags(nint annot, int flags);
+
+    [LibraryImport(Dll, StringMarshalling = StringMarshalling.Utf8)]
+    internal static partial nint FPDFAnnot_GetLinkedAnnot(nint annot, string key);
+
+    /// <summary>Nur Ink und Stamp; das Objekt gehört danach der Anmerkung.</summary>
+    [LibraryImport(Dll)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static partial bool FPDFAnnot_AppendObject(nint annot, nint pageObject);
+
+    // fpdf_edit.h — Seitenobjekte für Stempel (Text, Bild)
+
+    /// <summary>font: Name einer der 14 Standardschriften, etwa „Helvetica“.</summary>
+    [LibraryImport(Dll, StringMarshalling = StringMarshalling.Utf8)]
+    internal static partial nint FPDFPageObj_NewTextObj(nint document, string font, float fontSize);
+
+    [LibraryImport(Dll)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static unsafe partial bool FPDFText_SetText(nint textObject, char* text);
+
+    [LibraryImport(Dll)]
+    internal static partial void FPDFPageObj_Transform(nint pageObject, double a, double b, double c, double d, double e, double f);
+
+    [LibraryImport(Dll)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static partial bool FPDFPageObj_GetBounds(nint pageObject, out float left, out float bottom, out float right, out float top);
+
+    [LibraryImport(Dll)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static partial bool FPDFPageObj_SetFillColor(nint pageObject, uint r, uint g, uint b, uint a);
+
+    [LibraryImport(Dll)]
+    internal static partial nint FPDFPageObj_NewImageObj(nint document);
+
+    /// <summary>pages darf null sein (count 0).</summary>
+    [LibraryImport(Dll)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static partial bool FPDFImageObj_SetBitmap(nint pages, int count, nint imageObject, nint bitmap);
+
+    [LibraryImport(Dll)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static partial bool FPDFImageObj_SetMatrix(nint imageObject, double a, double b, double c, double d, double e, double f);
+
+    /// <summary>Nur für Objekte, die keiner Seite und keiner Anmerkung gehören.</summary>
+    [LibraryImport(Dll)]
+    internal static partial void FPDFPageObj_Destroy(nint pageObject);
 
     /// <summary>Seitenkoordinaten auf ein Pixelraster der angezeigten Seite; rechnet Seitenrahmen und /Rotate ein.</summary>
     [LibraryImport(Dll)]

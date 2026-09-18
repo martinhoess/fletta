@@ -1,3 +1,5 @@
+using System.Windows;
+using System.Windows.Media;
 using Fletta.Pdfium;
 
 namespace Fletta;
@@ -13,6 +15,9 @@ public abstract record PageEdit
 
     /// <summary>perPage nach der Änderung; neue Seiten bekommen added. newCount ist die Seitenzahl danach.</summary>
     public abstract T[] Remap<T>(IReadOnlyList<T> perPage, int newCount, T added);
+
+    /// <summary>Betrifft die Änderung nur eine Seite (Anmerkungen)? Dann rendert das Fenster nur sie neu und bleibt, wo es ist.</summary>
+    public virtual int? OnlyPage => null;
 }
 
 public sealed record DeletePages(int[] Pages) : PageEdit
@@ -57,4 +62,100 @@ public sealed record InsertPages(string Path, int At) : PageEdit
         result.InsertRange(At, Enumerable.Repeat(added, newCount - perPage.Count));
         return [.. result];
     }
+}
+
+/// <summary>
+/// Anmerkungen (Stufe 3): ändern keine Seitenfolge. Lagen stehen in Anteilen der Ansicht (0–1 von oben links, mit
+/// Flettas Drehung Turns zum Zeitpunkt der Änderung) — so trifft ein Wiederanwenden nach Strg+Z dieselbe Stelle, auch
+/// wenn die Ansicht inzwischen anders gedreht ist.
+/// </summary>
+public abstract record AnnotationEdit(int Page) : PageEdit
+{
+    public static readonly Color HighlightColor = Color.FromRgb(255, 226, 0);
+    public static readonly Color InkColor = Color.FromRgb(214, 40, 40);
+    public static readonly Color SignatureColor = Color.FromRgb(20, 40, 120);
+    public static readonly Color TextColor = Colors.Black;
+
+    public override int? OnlyPage => Page;
+
+    public override T[] Remap<T>(IReadOnlyList<T> perPage, int newCount, T added) => [.. perPage];
+
+    /// <summary>Anteile der Ansicht in Seitenkoordinaten; Right und Down sind die Richtungen der Ansicht je Punkt.</summary>
+    public readonly record struct ViewMap(Point Origin, Vector Right, Vector Down, Size Size)
+    {
+        public Point At(Point fraction) => Origin + Right * (fraction.X * Size.Width) + Down * (fraction.Y * Size.Height);
+    }
+
+    /// <summary>
+    /// Ansicht → angezeigte Seite (Flettas Drehung zurück, PageLayout.Turn) → Seitenkoordinaten (PdfDocument.DisplayToPage,
+    /// mit /Rotate und Seitenrahmen). Alles affin, also genügen drei Punkte. Im Selbsttest geprüft.
+    /// </summary>
+    public static ViewMap MapOf(PdfDocument document, int page, int turns)
+    {
+        var (origin, right, down) = document.DisplayToPage(page);
+        Point PageOf(Point view)
+        {
+            var shown = PageLayout.Turn(view, -turns);
+            return origin + right * shown.X + down * shown.Y;
+        }
+        var size = document.PageSize(page);
+        var viewSize = turns % 2 == 0 ? size : new Size(size.Height, size.Width);
+        var start = PageOf(new Point(0, 0));
+        return new ViewMap(start, (PageOf(new Point(1, 0)) - start) / viewSize.Width, (PageOf(new Point(0, 1)) - start) / viewSize.Height, viewSize);
+    }
+}
+
+/// <summary>Textmarker über Zeichen der Zeichenliste (PdfDocument.CharBoxes).</summary>
+public sealed record AddHighlight(int Page, int Start, int Count) : AnnotationEdit(Page)
+{
+    public override void Apply(PdfDocument document) => document.AddHighlight(Page, Start, Count, HighlightColor);
+}
+
+/// <summary>Freihand und gezeichnete Unterschrift: Striche in Anteilen der Ansicht, Breite in Punkt.</summary>
+public sealed record AddInk(int Page, int Turns, Point[][] Strokes, Color Color, float Width) : AnnotationEdit(Page)
+{
+    public override void Apply(PdfDocument document)
+    {
+        var map = MapOf(document, Page, Turns);
+        document.AddInk(Page, [.. Strokes.Select(stroke => stroke.Select(map.At).ToArray())], Color, Width);
+    }
+}
+
+/// <summary>Notiz mit Symbol oben links an At.</summary>
+public sealed record AddNote(int Page, int Turns, Point At, string Text) : AnnotationEdit(Page)
+{
+    public override void Apply(PdfDocument document) => document.AddNote(Page, MapOf(document, Page, Turns).At(At), Text);
+}
+
+/// <summary>Text auf die Seite, linke obere Ecke an At, Größe in Punkt; steht in der Ansicht aufrecht.</summary>
+public sealed record AddText(int Page, int Turns, Point At, string Text, float Size) : AnnotationEdit(Page)
+{
+    public override void Apply(PdfDocument document)
+    {
+        var map = MapOf(document, Page, Turns);
+        document.AddText(Page, map.At(At), map.Right, map.Down, Text, Size, TextColor);
+    }
+}
+
+/// <summary>Bild (Unterschrift aus Datei) in den Kasten Box der Ansicht; Pixel BGRA mit Alpha.</summary>
+public sealed record AddImage(int Page, int Turns, Rect Box, byte[] Bgra, int PixelWidth, int PixelHeight) : AnnotationEdit(Page)
+{
+    public override void Apply(PdfDocument document)
+    {
+        var map = MapOf(document, Page, Turns);
+        var corner = map.At(Box.BottomLeft);
+        document.AddImage(Page, corner, map.At(Box.BottomRight) - corner, map.At(Box.TopLeft) - corner, Bgra, PixelWidth, PixelHeight);
+    }
+}
+
+/// <summary>Anmerkung Nummer Index der Seite löschen.</summary>
+public sealed record RemoveAnnotation(int Page, int Index) : AnnotationEdit(Page)
+{
+    public override void Apply(PdfDocument document) => document.RemoveAnnotation(Page, Index);
+}
+
+/// <summary>Text einer Notiz ändern.</summary>
+public sealed record SetNoteText(int Page, int Index, string Text) : AnnotationEdit(Page)
+{
+    public override void Apply(PdfDocument document) => document.SetAnnotationText(Page, Index, Text);
 }

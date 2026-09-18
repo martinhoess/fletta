@@ -51,6 +51,8 @@ public partial class MainWindow : Window
         new("Strg+Umschalt+C", "nur den Text kopieren"),
         new("Strg+F", "suchen; Enter oder F3: nächster Treffer, mit Umschalt: voriger"),
         new("Klick auf einen Link", "springt zur Seite oder öffnet die Adresse im Browser"),
+        new("Anmerkungen", "Werkzeuge oben: Textmarker, Notiz, Freihand, Text, Unterschrift; Esc beendet das Werkzeug"),
+        new("Rechtsklick auf Anmerkung", "Notiz bearbeiten oder Anmerkung löschen"),
         new("Strg+P", "drucken"),
         new("Strg+O", "öffnen (neues Fenster, wenn schon eines offen ist)"),
         new("F1 oder ?", "diese Übersicht"),
@@ -87,8 +89,10 @@ public partial class MainWindow : Window
     readonly Stack<PageSlot> spareSlots = [];
     readonly Dictionary<int, RenderResult> rendered = []; // nur erfolgreiche: Bild samt Auftrag, zu dem es gehört
     readonly Dictionary<int, string> pageErrors = [];
-    readonly Dictionary<int, IReadOnlyList<PageLink>> pageLinks = []; // je Seite, gelesen im Hintergrund nach dem ersten Bild
-    int pagesGeneration; // Seitenfolge geändert (ShowPages, Schließen): ältere Antworten zu Links verfallen
+    /// <summary>Links (Stufe 2) und Anmerkungen (Stufe 3) einer Seite, gelesen im Hintergrund nach ihrem ersten Bild.</summary>
+    sealed record PageItems(IReadOnlyList<PageLink> Links, IReadOnlyList<PageAnnotation> Annotations);
+    readonly Dictionary<int, PageItems> pageItems = [];
+    int[] pageRevisions = []; // je Seite: Anmerkungen seit dem Laden, siehe RenderRequest.Revision
     long droppedPixels; // verworfene Seitenbilder seit dem letzten Anstoß des GC, siehe Discard
     bool measurePending;
     bool wasMaximized;     // letzter Zustand vor dem Minimieren, den merkt sich Fletta
@@ -250,6 +254,8 @@ public partial class MainWindow : Window
     /// <summary>Nach jeder Änderung an edits: Titel, Speichern-Knopf und prozessübergreifendes Signal nachführen.</summary>
     void EditsChanged()
     {
+        // Offene Menüs zeigen auf Seiten- und Anmerkungsnummern von vorher (Review 2026-09-18).
+        PageMenu.IsOpen = AnnotMenu.IsOpen = false;
         SaveButton.Visibility = edits.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
         if (edits.Count > 0) unsavedSignal ??= new EventWaitHandle(false, EventResetMode.ManualReset, UnsavedSignal);
         else
@@ -310,10 +316,11 @@ public partial class MainWindow : Window
         }
         quarterTurns = new int[pagesPt.Count];
         pageTexts = new string?[pagesPt.Count];
+        pageRevisions = new int[pagesPt.Count];
         MessagePanel.Visibility = Visibility.Collapsed;
         SetDocumentControls(true);
         ShowOutlineMessage("Gliederung wird gelesen …");
-        Thumbs.Show(pagesPt, quarterTurns, sidebarWidth.Value);
+        Thumbs.Show(pagesPt, quarterTurns, pageRevisions, sidebarWidth.Value);
         App.Mark("leiste");
         ApplyZoom();
     }
@@ -356,8 +363,11 @@ public partial class MainWindow : Window
         pagesPt = [];
         quarterTurns = [];
         pageTexts = [];
-        pageLinks.Clear();
-        pagesGeneration++;
+        pageRevisions = [];
+        pageItems.Clear();
+        charBoxes.Clear();
+        sketches.Clear(); // hängen an PageCanvas, das gleich geleert wird
+        SetTool(Tool.None);
         titlePage = -1;
         pinnedOffset = null;
         outlineRequested = false;
@@ -418,7 +428,8 @@ public partial class MainWindow : Window
     void SetDocumentControls(bool enabled)
     {
         foreach (var button in new ButtonBase[] { SidebarButton, PrintButton, CopyButton, SearchButton, RotateLeftButton, RotateRightButton,
-                                                  FitWidthButton, FitPageButton, SpreadsButton, PagedButton })
+                                                  FitWidthButton, FitPageButton, SpreadsButton, PagedButton, HighlightToolButton,
+                                                  NoteToolButton, InkToolButton, TextToolButton, SignToolButton })
             button.IsEnabled = enabled;
         ZoomPill.Visibility = PagePill.Visibility = enabled ? Visibility.Visible : Visibility.Collapsed;
         ApplySidebar(enabled);
@@ -688,7 +699,7 @@ public partial class MainWindow : Window
         double width = size.Width * dpi.DpiScaleX, height = size.Height * dpi.DpiScaleY;
         var shrink = Math.Min(1, Math.Sqrt(MaxPixelsPerPage / (width * height)));
         return new(page, PageLayout.ToPixels(width * shrink), PageLayout.ToPixels(height * shrink),
-                   dpi.PixelsPerInchX * shrink, dpi.PixelsPerInchY * shrink, quarterTurns[page]);
+                   dpi.PixelsPerInchX * shrink, dpi.PixelsPerInchY * shrink, quarterTurns[page], Revision: pageRevisions[page]);
     }
 
     void Deliver(RenderResult result)
@@ -700,7 +711,11 @@ public partial class MainWindow : Window
             return;
         }
         var page = result.Request.Page;
-        if (result.Bitmap is not null) LoadLinks(page);
+        if (result.Bitmap is not null)
+        {
+            LoadPageItems(page);
+            if (result.Request.Revision == pageRevisions[page]) RemoveSketches(page); // die Anmerkung steht jetzt im Bild
+        }
         var wanted = RequestFor(page);
         // Aus einer älteren Zoomstufe, während die passende Größe schon da ist: sonst überschreibt
         // ein 110-%-Bild das scharfe 100-%-Bild, nachdem man schnell wieder zurückgezoomt hat.
@@ -997,6 +1012,14 @@ public partial class MainWindow : Window
         var plain = Keyboard.Modifiers == ModifierKeys.None;
         var shift = Keyboard.Modifiers == ModifierKeys.Shift;
         var ctrlShift = Keyboard.Modifiers == (ModifierKeys.Control | ModifierKeys.Shift);
+        // Während eines Werkzeugzugs (Maustaste gedrückt) nur Esc: Entf, Strg+Z oder R änderten die Seiten unter dem Zug weg,
+        // und der Strich landete auf der falschen Seite oder gar keiner (Review 2026-09-18).
+        if (gesture is not null)
+        {
+            if (e.Key == Key.Escape) CancelGesture();
+            e.Handled = true;
+            return;
+        }
         // Im Suchfeld tippt man: nur Enter, F3, Esc und Strg+F gehören der Suche, alles andere dem Feld.
         if (SearchBox.IsKeyboardFocused && !(e.Key is Key.Enter or Key.F3 or Key.Escape || (e.Key == Key.F && ctrl)))
         {
@@ -1011,6 +1034,10 @@ public partial class MainWindow : Window
             case Key.Escape when dragging: EndDrag(); break;
             case Key.Escape when ZoomMenu.IsOpen: ZoomMenu.IsOpen = false; break;
             case Key.Escape when PageMenu.IsOpen: PageMenu.IsOpen = false; break;
+            case Key.Escape when AnnotMenu.IsOpen: AnnotMenu.IsOpen = false; break;
+            case Key.Escape when SignMenu.IsOpen: SignMenu.IsOpen = false; break;
+            case Key.Escape when gesture is not null: CancelGesture(); break;
+            case Key.Escape when tool != Tool.None: SetTool(Tool.None); break;
             case Key.Escape when HelpOverlay.IsVisible: ToggleHelp(); break;
             case Key.Escape when searchOpen: CloseSearch(); break;
             case Key.F1 when plain: ToggleHelp(); break;
@@ -1073,6 +1100,11 @@ public partial class MainWindow : Window
     {
         var point = e.GetPosition(Scroller);
         if (layout is null || point.X >= Scroller.ViewportWidth || point.Y >= Scroller.ViewportHeight) return;
+        if (tool != Tool.None)
+        {
+            BeginGesture(e); // mit einem Werkzeug zeichnet oder markiert die Maus, statt zu scrollen
+            return;
+        }
         dragging = true;
         dragFrom = point;
         dragOffset = new Vector(Scroller.HorizontalOffset, Scroller.VerticalOffset);
@@ -1087,9 +1119,14 @@ public partial class MainWindow : Window
     /// </summary>
     void OnDragMove(object sender, MouseEventArgs e)
     {
+        if (gesture is not null)
+        {
+            ContinueGesture(e);
+            return;
+        }
         if (!dragging)
         {
-            ShowLinkUnder(e);
+            ShowTipUnder(e);
             return;
         }
         var point = e.GetPosition(Scroller);
@@ -1107,6 +1144,11 @@ public partial class MainWindow : Window
     /// <summary>Losgelassen, ohne gezogen zu haben, und über einem Link: dem Link folgen.</summary>
     void OnDragEnd(object sender, MouseButtonEventArgs e)
     {
+        if (gesture is not null)
+        {
+            FinishGesture(e);
+            return;
+        }
         var moved = e.GetPosition(Scroller) - dragFrom;
         var clicked = dragging && Math.Abs(moved.X) < SystemParameters.MinimumHorizontalDragDistance
                                && Math.Abs(moved.Y) < SystemParameters.MinimumVerticalDragDistance;
@@ -1115,41 +1157,56 @@ public partial class MainWindow : Window
     }
 
     /// <summary>
-    /// Links einer Seite einmal lesen, im Hintergrund: nicht auf dem Weg zum ersten Bild und nicht bei jedem Zoomschritt
-    /// neu (Review 2026-09-18). Bis dahin ist die Seite ohne Links; ein Fehlschlag zählt als keine Links.
+    /// Links und Anmerkungen einer Seite einmal lesen, im Hintergrund: nicht auf dem Weg zum ersten Bild und nicht bei
+    /// jedem Zoomschritt neu (Review 2026-09-18). Bis dahin steht ein leerer Platzhalter; ist er inzwischen weg (Seiten
+    /// geändert, neue Anmerkung), verfällt die Antwort und das nächste Bild fragt neu. Ein Fehlschlag lässt ihn stehen.
     /// </summary>
-    async void LoadLinks(int page)
+    async void LoadPageItems(int page)
     {
-        if (renderer is not { } reader || !pageLinks.TryAdd(page, [])) return;
-        var generation = pagesGeneration;
+        if (renderer is not { } reader || pageItems.ContainsKey(page)) return;
+        var placeholder = new PageItems([], []);
+        pageItems[page] = placeholder;
         try
         {
-            var links = await reader.Invoke(document => document.Links(page), whenIdle: true);
-            if (reader == renderer && generation == pagesGeneration) pageLinks[page] = links;
+            var items = await reader.Invoke(document => new PageItems(document.Links(page), document.Annotations(page)), whenIdle: true);
+            if (reader == renderer && pageItems.TryGetValue(page, out var current) && ReferenceEquals(current, placeholder)) pageItems[page] = items;
         }
         catch (Exception e) when (e is PdfException or TaskCanceledException) { }
     }
 
-    /// <summary>Link an dieser Stelle der Leinwand; die Drehung der Ansicht wird herausgerechnet.</summary>
-    PageLink? LinkAt(Point point)
+    /// <summary>Seite unter einer Stelle der Leinwand und die Stelle in Anteilen der Ansicht (mit Flettas Drehung).</summary>
+    (int Page, Point At)? PageUnder(Point point)
     {
         foreach (var (page, slot) in slots)
         {
             var at = new Point((point.X - Canvas.GetLeft(slot.Frame)) / slot.Frame.Width, (point.Y - Canvas.GetTop(slot.Frame)) / slot.Frame.Height);
-            if (at.X < 0 || at.X > 1 || at.Y < 0 || at.Y > 1) continue;
-            if (!pageLinks.TryGetValue(page, out var links)) return null;
-            var unturned = PageLayout.Turn(at, -quarterTurns[page]);
-            return links.FirstOrDefault(link => link.Area.Contains(unturned));
+            if (at.X >= 0 && at.X <= 1 && at.Y >= 0 && at.Y <= 1) return (page, at);
         }
         return null;
     }
 
-    /// <summary>Über einem Link: Hand und Ziel als Tooltip.</summary>
-    void ShowLinkUnder(MouseEventArgs e)
+    /// <summary>Link an dieser Stelle der Leinwand; die Drehung der Ansicht wird herausgerechnet.</summary>
+    PageLink? LinkAt(Point point) =>
+        PageUnder(point) is var (page, at) && pageItems.TryGetValue(page, out var items)
+            ? items.Links.FirstOrDefault(link => link.Area.Contains(PageLayout.Turn(at, -quarterTurns[page])))
+            : null;
+
+    /// <summary>Oberste Anmerkung an dieser Stelle (die zuletzt gezeichnete liegt oben).</summary>
+    (int Page, PageAnnotation Annotation)? AnnotationAt(Point point) =>
+        PageUnder(point) is var (page, at) && pageItems.TryGetValue(page, out var items)
+            && items.Annotations.LastOrDefault(annotation => annotation.Area.Contains(PageLayout.Turn(at, -quarterTurns[page]))) is { } found
+            ? (page, found)
+            : null;
+
+    /// <summary>Über einem Link: Hand und Ziel als Tooltip; über einer Anmerkung ihr Text. Mit Werkzeug dessen Zeiger.</summary>
+    void ShowTipUnder(MouseEventArgs e)
     {
-        var link = layout is null ? null : LinkAt(e.GetPosition(PageCanvas));
-        PageCanvas.Cursor = link is null ? null : Cursors.Hand;
-        var tip = link is null ? null : link.Page >= 0 ? $"Seite {link.Page + 1}" : link.Uri;
+        var point = e.GetPosition(PageCanvas);
+        var link = layout is null || tool != Tool.None ? null : LinkAt(point);
+        var annotation = layout is null || link is not null ? null : AnnotationAt(point);
+        PageCanvas.Cursor = link is not null ? Cursors.Hand : ToolCursor();
+        var tip = link is not null ? (link.Page >= 0 ? $"Seite {link.Page + 1}" : link.Uri)
+                : annotation is { } found ? AnnotationTip(found.Annotation) : null;
         if (!Equals(PageCanvas.ToolTip, tip)) PageCanvas.ToolTip = tip;
     }
 
@@ -1182,8 +1239,12 @@ public partial class MainWindow : Window
         }
     }
 
-    /// <summary>Fang verloren — Fensterwechsel, fremder Fang; das Ziehen endet dann ebenso.</summary>
-    void OnDragLost(object sender, MouseEventArgs e) => EndDrag();
+    /// <summary>Fang verloren — Fensterwechsel, fremder Fang; das Ziehen endet dann ebenso, ein Werkzeugzug verfällt.</summary>
+    void OnDragLost(object sender, MouseEventArgs e)
+    {
+        if (gesture is not null) CancelGesture();
+        else EndDrag();
+    }
 
     /// <summary>Gegen Wiedereintritt gesichert: ReleaseMouseCapture löst LostMouseCapture aus.</summary>
     void EndDrag()
@@ -1274,19 +1335,21 @@ public partial class MainWindow : Window
     {
         AddPageItem("Rechts drehen", "R", () => Rotate(+1, MenuPages));
         AddPageItem("Links drehen", "L", () => Rotate(-1, MenuPages));
-        AddMenuLine();
+        AddMenuLine(PageMenuItems);
         AddPageItem("Löschen", "Entf", () => DeletePagesCommand(MenuPages));
         AddPageItem("In neue PDF kopieren …", "", () => ExportPages(MenuPages, move: false));
         AddPageItem("In neue PDF verschieben …", "", () => ExportPages(MenuPages, move: true));
-        AddMenuLine();
+        AddMenuLine(PageMenuItems);
         AddPageItem("PDF davor einfügen …", "", () => PickAndInsert(MenuPages.Min()));
         AddPageItem("PDF dahinter einfügen …", "", () => PickAndInsert(MenuPages.Max() + 1));
-        AddMenuLine();
+        AddMenuLine(PageMenuItems);
         undoItem = AddPageItem("Rückgängig", "Strg+Z", Undo);
         saveItem = AddPageItem("Speichern", "Strg+S", () => _ = Save());
     }
 
-    Button AddPageItem(string text, string keys, Action action)
+    Button AddPageItem(string text, string keys, Action action) => AddMenuItem(PageMenuItems, PageMenu, text, keys, action);
+
+    Button AddMenuItem(StackPanel items, Popup menu, string text, string keys, Action action)
     {
         var shortcut = new TextBlock { Text = keys, Foreground = (Brush)FindResource("MutedBrush"), Margin = new Thickness(24, 0, 0, 0) };
         DockPanel.SetDock(shortcut, Dock.Right);
@@ -1298,15 +1361,15 @@ public partial class MainWindow : Window
         };
         item.Click += (_, _) =>
         {
-            PageMenu.IsOpen = false;
+            menu.IsOpen = false;
             action();
         };
-        PageMenuItems.Children.Add(item);
+        items.Children.Add(item);
         return item;
     }
 
-    void AddMenuLine() =>
-        PageMenuItems.Children.Add(new Border { Height = 1, Margin = new Thickness(6, 4, 6, 4), Background = (Brush)FindResource("LineBrush") });
+    void AddMenuLine(StackPanel items) =>
+        items.Children.Add(new Border { Height = 1, Margin = new Thickness(6, 4, 6, 4), Background = (Brush)FindResource("LineBrush") });
 
     void OpenPageMenu()
     {
@@ -1462,6 +1525,18 @@ public partial class MainWindow : Window
                 return PageRenderer.SizesOf(document);
             });
             if (renderer != opening) return -1;
+            if (edit.OnlyPage is { } changed)
+            {
+                // Anmerkung: nur diese Seite neu rendern, die Ansicht bleibt stehen; das alte Bild bis dahin auch.
+                edits.Add((edit, (int[])quarterTurns.Clone(), pageTexts));
+                pageRevisions[changed]++;
+                pageItems.Remove(changed);
+                EditsChanged();
+                busy = false;
+                Thumbs.Invalidate();
+                UpdateView();
+                return sizes.Length;
+            }
             edits.Add((edit, quarterTurns, pageTexts));
             quarterTurns = edit.Remap(quarterTurns, sizes.Length, 0);
             pageTexts = edit.Remap<string?>(pageTexts, sizes.Length, null);
@@ -1498,20 +1573,23 @@ public partial class MainWindow : Window
     /// <summary>Ansicht und Leiste nach einer Änderung am offenen Dokument neu aufbauen.</summary>
     void ShowPages(IReadOnlyList<Size> sizes, int focusPage)
     {
+        CancelGesture(); // die Seitennummer des Zugs gilt nicht mehr
         pagesPt = sizes;
         foreach (var result in rendered.Values) Discard(result);
         slots.Clear();
         spareSlots.Clear();
         rendered.Clear();
         pageErrors.Clear();
-        pageLinks.Clear();
-        pagesGeneration++;
+        pageItems.Clear();
+        charBoxes.Clear();
+        sketches.Clear(); // hängen an PageCanvas und gehen mit dessen Kindern
+        pageRevisions = new int[sizes.Count];
         mainWanted = [];
         PageCanvas.Children.Clear();
         layout = null;
         titlePage = -1;
         pinnedOffset = null;
-        Thumbs.Show(sizes, quarterTurns, sidebarWidth.Value);
+        Thumbs.Show(sizes, quarterTurns, pageRevisions, sidebarWidth.Value);
         currentPage = Math.Clamp(focusPage, 0, sizes.Count - 1);
         ApplyZoom();
         GoTo(currentPage);

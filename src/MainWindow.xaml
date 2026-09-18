@@ -41,8 +41,20 @@
         <Rectangle Style="{StaticResource ToolSeparator}" />
         <Button x:Name="CopyButton" Style="{StaticResource ToolButton}" Content="{StaticResource IconCopy}"
                 ToolTip="Seite kopieren: Bild und Text (Strg+C) – nur Text: Strg+Umschalt+C" Click="OnCopyClick" />
-        <Button x:Name="SearchButton" Style="{StaticResource ToolButton}" Content="{StaticResource IconSearch}"
+        <Button x:Name="SearchButton" AutomationProperties.Name="Suchen" Style="{StaticResource ToolButton}" Content="{StaticResource IconSearch}"
                 ToolTip="Suchen (Strg+F)" Click="OnSearchClick" />
+        <Rectangle Style="{StaticResource ToolSeparator}" />
+        <!-- Anmerkungen: ein Werkzeug ist aktiv, bis es wieder angeklickt wird oder Esc kommt; Strg+S speichert. -->
+        <ToggleButton x:Name="HighlightToolButton" AutomationProperties.Name="Textmarker" Style="{StaticResource ToolToggle}" Content="{StaticResource IconHighlight}"
+                      ToolTip="Textmarker – Text mit der Maus überstreichen" Click="OnHighlightToolClick" />
+        <ToggleButton x:Name="NoteToolButton" AutomationProperties.Name="Notiz" Style="{StaticResource ToolToggle}" Content="{StaticResource IconNote}"
+                      ToolTip="Notiz – auf die Stelle klicken" Click="OnNoteToolClick" />
+        <ToggleButton x:Name="InkToolButton" AutomationProperties.Name="Freihand" Style="{StaticResource ToolToggle}" Content="{StaticResource IconInk}"
+                      ToolTip="Freihand – mit gedrückter Maustaste zeichnen" Click="OnInkToolClick" />
+        <ToggleButton x:Name="TextToolButton" AutomationProperties.Name="Text auf die Seite" Style="{StaticResource ToolToggle}" Content="{StaticResource IconText}"
+                      ToolTip="Text auf die Seite – auf die Stelle klicken" Click="OnTextToolClick" />
+        <ToggleButton x:Name="SignToolButton" AutomationProperties.Name="Unterschrift" Style="{StaticResource ToolToggle}" Content="{StaticResource IconSign}"
+                      ToolTip="Unterschrift zeichnen, laden oder setzen" Click="OnSignToolClick" />
         <Rectangle Style="{StaticResource ToolSeparator}" />
         <Button Style="{StaticResource ToolButton}" Content="{StaticResource IconHelp}" ToolTip="Tastenkürzel (F1 oder ?)" Click="OnHelpClick" />
       </StackPanel>
@@ -122,7 +134,8 @@
       <!-- Ziehen zum Scrollen über Preview: den Druck behandelt der ScrollViewer sonst selbst (Fokus). -->
       <ScrollViewer x:Name="Scroller" HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Visible"
                     PreviewMouseLeftButtonDown="OnDragStart" MouseMove="OnDragMove"
-                    PreviewMouseLeftButtonUp="OnDragEnd" LostMouseCapture="OnDragLost">
+                    PreviewMouseLeftButtonUp="OnDragEnd" LostMouseCapture="OnDragLost"
+                    PreviewMouseRightButtonUp="OnPageRightClick">
         <ScrollViewer.Resources>
           <!-- Die Ecke zwischen beiden Leisten füllt die Vorlage von Windows mit dieser Systemfarbe. -->
           <SolidColorBrush x:Key="{x:Static SystemColors.ControlBrushKey}" Color="#141715" />
@@ -149,6 +162,21 @@
         <Border Background="{StaticResource ChromeBrush}" BorderBrush="{StaticResource LineBrush}" BorderThickness="1"
                 CornerRadius="8" Padding="4">
           <StackPanel x:Name="ZoomMenuItems" MinWidth="150" />
+        </Border>
+      </Popup>
+      <!-- Rechtsklick auf eine Anmerkung der Seite; Einträge je nach Anmerkung, siehe OnPageRightClick. -->
+      <Popup x:Name="AnnotMenu" Placement="MousePoint" StaysOpen="False" AllowsTransparency="True">
+        <Border Background="{StaticResource ChromeBrush}" BorderBrush="{StaticResource LineBrush}" BorderThickness="1"
+                CornerRadius="8" Padding="4">
+          <StackPanel x:Name="AnnotMenuItems" MinWidth="200" />
+        </Border>
+      </Popup>
+      <!-- Unterschrift: zeichnen, aus Bild laden, gemerkte setzen; Einträge baut OnSignToolClick. -->
+      <Popup x:Name="SignMenu" PlacementTarget="{Binding ElementName=SignToolButton}" Placement="Bottom" VerticalOffset="6"
+             StaysOpen="False" AllowsTransparency="True">
+        <Border Background="{StaticResource ChromeBrush}" BorderBrush="{StaticResource LineBrush}" BorderThickness="1"
+                CornerRadius="8" Padding="4">
+          <StackPanel x:Name="SignMenuItems" MinWidth="240" />
         </Border>
       </Popup>
       <!-- Rechtsklick auf Miniaturen; Einträge baut BuildPageMenu. -->
@@ -181,15 +209,15 @@
         <Border x:Name="SearchPill" Style="{StaticResource Pill}" VerticalAlignment="Top" HorizontalAlignment="Right"
                 Margin="0,0,0,8" Visibility="Collapsed">
           <StackPanel Orientation="Horizontal">
-            <TextBox x:Name="SearchBox" Style="{StaticResource SearchBox}" ToolTip="Suchbegriff – Enter: nächster Treffer"
+            <TextBox x:Name="SearchBox" Style="{StaticResource SearchBox}" AutomationProperties.Name="Suchbegriff" ToolTip="Suchbegriff – Enter: nächster Treffer"
                      TextChanged="OnSearchTextChanged" />
             <TextBlock x:Name="SearchStatus" Foreground="{StaticResource MutedBrush}" VerticalAlignment="Center"
                        MinWidth="72" Margin="10,0,6,0" />
-            <Button Style="{StaticResource ToolButton}" Content="{StaticResource IconUp}" ToolTip="Voriger Treffer (Umschalt+F3)"
+            <Button Style="{StaticResource ToolButton}" Content="{StaticResource IconUp}" ToolTip="Voriger Treffer (Umschalt+F3)" AutomationProperties.Name="Voriger Treffer"
                     Click="OnSearchPrevClick" />
-            <Button Style="{StaticResource ToolButton}" Content="{StaticResource IconDown}" ToolTip="Nächster Treffer (F3)"
+            <Button Style="{StaticResource ToolButton}" Content="{StaticResource IconDown}" ToolTip="Nächster Treffer (F3)" AutomationProperties.Name="Nächster Treffer"
                     Click="OnSearchNextClick" />
-            <Button Style="{StaticResource ToolButton}" Content="{StaticResource IconClose}" ToolTip="Suche schließen (Esc)"
+            <Button Style="{StaticResource ToolButton}" Content="{StaticResource IconClose}" ToolTip="Suche schließen (Esc)" AutomationProperties.Name="Suche schließen"
                     Click="OnSearchCloseClick" />
           </StackPanel>
         </Border>

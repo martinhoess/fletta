@@ -34,6 +34,7 @@ public partial class ThumbnailPanel : UserControl
     readonly DispatcherTimer resizeSettled = new() { Interval = TimeSpan.FromMilliseconds(150) };
     IReadOnlyList<Size> pagesPt = [];
     int[] quarterTurns = [];
+    int[] revisions = []; // je Seite, dasselbe Feld wie im Fenster (Anmerkungen, siehe RenderRequest.Revision)
     DpiScale dpi = new(1, 1);
     double boxSize;
     (int First, int Last) visible = (0, -1);
@@ -94,14 +95,15 @@ public partial class ThumbnailPanel : UserControl
     }
 
     /// <summary>
-    /// Neues Dokument. quarterTurns ist dasselbe Feld wie im Fenster, Drehungen meldet Refresh.
-    /// expectedWidth ist die Breite, die die Leiste gleich bekommt: beim Befüllen hat sie oft noch
-    /// keine (gerade erst eingeblendet).
+    /// Neues Dokument. quarterTurns und revisions sind dieselben Felder wie im Fenster, Drehungen meldet Refresh,
+    /// neue Anmerkungen Invalidate. expectedWidth ist die Breite, die die Leiste gleich bekommt: beim Befüllen hat sie
+    /// oft noch keine (gerade erst eingeblendet).
     /// </summary>
-    public void Show(IReadOnlyList<Size> pagesPt, int[] quarterTurns, double expectedWidth)
+    public void Show(IReadOnlyList<Size> pagesPt, int[] quarterTurns, int[] revisions, double expectedWidth)
     {
         this.pagesPt = pagesPt;
         this.quarterTurns = quarterTurns;
+        this.revisions = revisions;
         items = [.. Enumerable.Range(0, pagesPt.Count).Select(page => new ThumbItem(page))];
         List.ItemsSource = items;
         boxSize = 0; // erzwingt die Größen für alle Einträge
@@ -114,6 +116,7 @@ public partial class ThumbnailPanel : UserControl
         List.ItemsSource = items;
         pagesPt = [];
         quarterTurns = [];
+        revisions = [];
         visible = (0, -1);
         current = -1;
     }
@@ -160,6 +163,9 @@ public partial class ThumbnailPanel : UserControl
         // eine Seite hinterher und kam am Dokumentende nicht ganz mit (Martin, 2026-09-13). Ganz sichtbar: kein Bildlauf.
         List.ScrollIntoView(items[page]);
     }
+
+    /// <summary>Die Seite hat sich geändert (Anmerkung): Miniatur neu bestellen, das alte Bild bleibt bis dahin stehen.</summary>
+    public void Invalidate() => WantedChanged?.Invoke();
 
     /// <summary>Größe und Drehung einer Seite neu setzen, etwa nach R / L.</summary>
     public void Refresh(int page)
@@ -346,7 +352,7 @@ public partial class ThumbnailPanel : UserControl
     {
         var item = items[page];
         return new(page, PageLayout.ToPixels(item.ShownWidth * dpi.DpiScaleX), PageLayout.ToPixels(item.ShownHeight * dpi.DpiScaleY),
-                   dpi.PixelsPerInchX, dpi.PixelsPerInchY, quarterTurns[page], Thumbnail: true);
+                   dpi.PixelsPerInchX, dpi.PixelsPerInchY, quarterTurns[page], Thumbnail: true, Revision: revisions[page]);
     }
 
     public void Deliver(RenderResult result)
