@@ -55,6 +55,7 @@ static class SelfTest
             failures += LayoutChecks();
             failures += PasswordChecks(dir.FullName);
             failures += EditChecks(good, dir.FullName);
+            failures += AnnotationChecks(good, dir.FullName);
             failures += RendererChecks(good, junk, dir.FullName);
         }
         finally
@@ -311,6 +312,119 @@ static class SelfTest
     }
 
     static bool Near(Point a, Point b) => Math.Abs(a.X - b.X) < 1e-9 && Math.Abs(a.Y - b.Y) < 1e-9;
+
+    /// <summary>
+    /// Anmerkungen (Stufe 3) auf der Vier-Seiten-PDF (Breiten 100–400, Höhe 500, „Seite …“ in 12 pt bei x 10, y 250):
+    /// anlegen, im Bild sehen, speichern, wieder finden, ändern, löschen; dazu die Lage auf gedrehten Seiten und in
+    /// gedrehter Ansicht.
+    /// </summary>
+    static int AnnotationChecks(string twoPagesWithOutline, string dir)
+    {
+        var failures = 0;
+        var four = Path.Combine(dir, "vier Seiten.pdf");
+        var saved = Path.Combine(dir, "mit Anmerkungen.pdf");
+        using (var doc = PdfDocument.Open(four))
+        {
+            var map = AnnotationEdit.MapOf(doc, 0, 0);
+            // PDFium rechnet über ein Ganzzahlraster (1e6) und float: auf ein Tausendstel genau.
+            static bool Close(Point a, Point b) => Math.Abs(a.X - b.X) < 1e-3 && Math.Abs(a.Y - b.Y) < 1e-3;
+            failures += Check("Ansicht → Seite: oben links ist (0, 500), rechts x+, unten y−",
+                Close(map.At(new Point(0, 0)), new Point(0, 500)) && Close((Point)map.Right, new Point(1, 0)) && Close((Point)map.Down, new Point(0, -1)));
+
+            // Textmarker über „Seite Eins“: Zeichen unter der Maus, eine Zeile, gelb im Bild.
+            var boxes = doc.CharBoxes(0);
+            var first = MainWindow.CharAt(boxes, new Point(12 / 100.0, (500 - 254) / 500.0), new Size(100, 500));
+            var last = MainWindow.CharAt(boxes, new Point(0.99, (500 - 254) / 500.0), new Size(100, 500));
+            failures += Check("Textmarker: Zeichen unter der Maus", first == 0 && last > 3);
+            failures += Check("Textmarker: eine Zeile", MainWindow.LineRects(boxes, first, last).Count == 1);
+            new AddHighlight(0, first, last - first + 1).Apply(doc);
+            var marked = doc.Annotations(0).Single();
+            failures += Check("Textmarker angelegt, um den Text herum", marked.Subtype == 9 && marked.Area.Left < 0.12 && marked.Area.Top < 0.5 && marked.Area.Bottom > 0.49);
+            failures += Check("Textmarker gelb im Bild", CountPixels(doc.Render(0, 100, 500, 72, 72, 0), marked.Area, IsYellow) > 20);
+
+            // Freihand quer über Seite 2 (200 × 500), 4 pt breit, rot.
+            new AddInk(1, 0, [[new Point(0.1, 0.5), new Point(0.9, 0.5)]], AnnotationEdit.InkColor, 4).Apply(doc);
+            failures += Check("Freihand rot im Bild", IsRed(RgbAt(doc.Render(1, 200, 500, 72, 72, 0), 100, 250)));
+
+            // Notiz auf Seite 3, Text ändern.
+            new AddNote(2, 0, new Point(0.1, 0.1), "Hallo Notiz").Apply(doc);
+            failures += Check("Notiz mit Text", doc.Annotations(2).SingleOrDefault() is { Subtype: 1, Contents: "Hallo Notiz" });
+            new SetNoteText(2, 0, "Geändert").Apply(doc);
+            failures += Check("Notiz geändert", doc.Annotations(2).Single().Contents == "Geändert");
+
+            // Text auf Seite 4 (400 × 500), waagrecht in der Ansicht und dunkel im Bild.
+            new AddText(3, 0, new Point(0.1, 0.1), "Grüße", 20).Apply(doc);
+            var text = doc.Annotations(3).Single();
+            failures += Check("Text als Stempel samt /Contents, links oben",
+                text is { Subtype: 13, Contents: "Grüße" } && Math.Abs(text.Area.Left - 0.1) < 0.02 && Math.Abs(text.Area.Top - 0.1) < 0.02);
+            failures += Check("Text waagrecht", text.Area.Width * 400 > 2 * text.Area.Height * 500);
+            failures += Check("Text dunkel im Bild", CountPixels(doc.Render(3, 400, 500, 72, 72, 0), text.Area, IsDark) > 20);
+
+            // Bild (Unterschrift aus Datei): 2 × 1 rote Pixel in einen Kasten unten auf Seite 1.
+            new AddImage(0, 0, new Rect(0.2, 0.8, 0.6, 0.1), [0, 0, 255, 255, 0, 0, 255, 255], 2, 1).Apply(doc);
+            failures += Check("Bild im Kasten", IsRed(RgbAt(doc.Render(0, 100, 500, 72, 72, 0), 50, 425)));
+            doc.SaveAs(saved);
+        }
+        using (var reopened = PdfDocument.Open(saved))
+        {
+            failures += Check("Speichern behält die Anmerkungen",
+                reopened.Annotations(0).Count == 2 && reopened.Annotations(1).Count == 1 && reopened.Annotations(2).Count == 1 && reopened.Annotations(3).Count == 1);
+            new RemoveAnnotation(2, 0).Apply(reopened);
+            failures += Check("Anmerkung gelöscht", reopened.Annotations(2).Count == 0);
+        }
+        // Erscheinung (/AP) steht in der Datei, auch für Seiten, die nie gerendert wurden: die Freihand-Linie auf Seite 3.
+        using (var doc = PdfDocument.Open(four))
+        {
+            new AddInk(2, 0, [[new Point(0.1, 0.5), new Point(0.9, 0.5)]], AnnotationEdit.InkColor, 2).Apply(doc);
+            var unrendered = Path.Combine(dir, "ohne Rendern.pdf");
+            doc.SaveAs(unrendered);
+            failures += Check("Freihand hat /AP ohne vorheriges Rendern", Regex.IsMatch(Encoding.Latin1.GetString(File.ReadAllBytes(unrendered)), @"/AP\b"));
+        }
+        // Gedreht: auf der mit /Rotate 90 gedrehten Seite 2 der Minimal-PDF steht Text waagrecht in der Anzeige; in einer mit R
+        // gedrehten Ansicht (Turns 1) steht er in der Anzeige senkrecht, weil er in der Ansicht waagrecht steht — und oben links
+        // der Ansicht ist unten links der Seite.
+        using (var doc = PdfDocument.Open(twoPagesWithOutline))
+        {
+            new AddText(1, 0, new Point(0.1, 0.1), "Waagrecht", 20).Apply(doc);
+            var turnedPage = doc.Annotations(1).Single();
+            failures += Check("Text auf /Rotate-90-Seite waagrecht", turnedPage.Area.Width * 842 > 2 * turnedPage.Area.Height * 595);
+        }
+        using (var doc = PdfDocument.Open(four))
+        {
+            new AddText(3, 1, new Point(0.1, 0.1), "Gedreht", 20).Apply(doc);
+            var turnedView = doc.Annotations(3).Single();
+            failures += Check("Text in gedrehter Ansicht: senkrecht, unten links",
+                turnedView.Area.Height * 500 > 2 * turnedView.Area.Width * 400 && turnedView.Area.Left < 0.2 && turnedView.Area.Bottom > 0.8);
+        }
+
+        failures += Check("Text-Stempel: Leerzeile ist nur Abstand", EditError(four, doc => new AddText(0, 0, new Point(0.1, 0.1), "Eins\n\nDrei", 12).Apply(doc)) == 0);
+        failures += Check("Text-Stempel: fehlende Zeichen erkannt, Umlaute und € nicht",
+            PdfDocument.MissingInStampFont("Grüße ✓ Łukasz € „x“") == "✓Ł" && PdfDocument.MissingInStampFont("Zeile\r\nZwei") == "");
+
+        // Unterschrift: Striche auf ihren Rahmen bezogen; Bild ohne hellen Hintergrund, auf die Schrift zugeschnitten.
+        var signature = Signatures.Normalize([[new Point(10, 20), new Point(110, 70)], [new Point(60, 45)]]);
+        failures += Check("Unterschrift: Rahmen 0–1, Seitenverhältnis 2", signature is { Aspect: 2 }
+            && signature.ToPoints()[0].SequenceEqual([new Point(0, 0), new Point(1, 1)]) && signature.ToPoints()[1].SequenceEqual([new Point(0.5, 0.5)]));
+        failures += Check("Unterschrift: ohne Ausdehnung keine", Signatures.Normalize([[new Point(5, 5)]]) is null);
+        byte[] white = [255, 255, 255, 255], ink = [120, 40, 20, 255];
+        var (cleaned, width, height) = Signatures.Clean([.. white, .. white, .. white, .. ink, .. white, .. white], 3, 2);
+        failures += Check("Unterschrift aus Bild: weiß wird durchsichtig, zugeschnitten", width == 1 && height == 1 && cleaned.SequenceEqual(ink));
+        return failures;
+    }
+
+    static bool IsYellow(int rgb) => (rgb >> 16 & 255) > 200 && (rgb >> 8 & 255) > 170 && (rgb & 255) < 120;
+    static bool IsRed(int rgb) => (rgb >> 16 & 255) > 150 && (rgb >> 8 & 255) < 110 && (rgb & 255) < 110;
+    static bool IsDark(int rgb) => (rgb >> 16 & 255) < 90 && (rgb >> 8 & 255) < 90 && (rgb & 255) < 90;
+
+    /// <summary>Pixel im Bereich (Anteile der Seite), auf die test passt.</summary>
+    static int CountPixels(BitmapSource bitmap, Rect area, Func<int, bool> test)
+    {
+        var count = 0;
+        for (var y = (int)(area.Top * bitmap.PixelHeight); y < Math.Min(bitmap.PixelHeight, (int)(area.Bottom * bitmap.PixelHeight)); y++)
+            for (var x = (int)(area.Left * bitmap.PixelWidth); x < Math.Min(bitmap.PixelWidth, (int)(area.Right * bitmap.PixelWidth)); x++)
+                if (test(RgbAt(bitmap, x, y))) count++;
+        return count;
+    }
 
     /// <summary>
     /// Lage von Suchtreffern und Links in Anteilen der Seite, auf Seite 2 (/Rotate 90 im PDF) mitgedreht. „Fletta Test“

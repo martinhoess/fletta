@@ -65,4 +65,5 @@ public sealed record AppSettings
 /// <summary>Vom Compiler erzeugte JSON-Verarbeitung: kein Reflection-Aufwand beim Start.</summary>
 [JsonSourceGenerationOptions(WriteIndented = true, UseStringEnumConverter = true)]
 [JsonSerializable(typeof(AppSettings))]
+[JsonSerializable(typeof(DrawnSignature))]
 partial class SettingsJson : JsonSerializerContext;

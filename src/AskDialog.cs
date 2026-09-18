@@ -77,7 +77,12 @@ static class AskDialog
             };
             row.Children.Add(button);
         }
-        dialog.Loaded += (_, _) => (input ?? row.Children[0]).Focus();
+        // Ein zusammengesetztes Eingabefeld (Text samt Größenwahl) nimmt den Fokus nicht selbst: dann sein erstes Element.
+        dialog.Loaded += (_, _) =>
+        {
+            if (input is null) row.Children[0].Focus();
+            else if (!input.Focus()) input.MoveFocus(new TraversalRequest(FocusNavigationDirection.First));
+        };
         dialog.ShowDialog();
         return choice;
     }
