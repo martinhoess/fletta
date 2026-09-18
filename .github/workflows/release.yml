@@ -21,8 +21,8 @@ jobs:
       - name: Version
         id: ver
         # Eine Stelle: <Version> im csproj. Ein Tag muss dazu passen, sonst trügen EXE und Setup verschiedene Nummern.
-        # vX.Y.Z-pre wird ein Prerelease derselben Version: der Update-Knopf sieht es nicht (GitHub liefert unter
-        # „latest“ keine Prereleases), zum Freigeben danach vX.Y.Z auf denselben Stand setzen.
+        # vX.Y.Z-pre wird ein Prerelease derselben Version: der Update-Hinweis bietet es nur an, wer in Fletta unter
+        # „Updates“ Vorabversionen eingeschaltet hat; zum Freigeben danach vX.Y.Z auf denselben Stand setzen.
         run: |
           $v = ([xml](Get-Content src/Fletta.csproj)).Project.PropertyGroup.Version | Where-Object { $_ } | Select-Object -First 1
           if ($v -notmatch '^\d+\.\d+\.\d+$') { throw "Version '$v' ist nicht x.y.z (Inno braucht Zahlen)" }

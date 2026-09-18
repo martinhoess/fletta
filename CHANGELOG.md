@@ -2,6 +2,11 @@
 
 Die Release-CI übernimmt den Abschnitt der jeweiligen Version als Text des GitHub-Releases.
 
+## 0.13.1
+
+- Neuer Knopf „Updates“ oben in der Werkzeugleiste: zeigt die installierte Version, prüft auf Wunsch sofort und bietet mit „Auch Vorabversionen anbieten“ neue Testversionen über den gewohnten Hinweis „… ist da · Aktualisieren“ an – ohne Setup von Hand. Mit Vorabversionen sieht Fletta stündlich statt täglich nach.
+- Enthält alles aus 0.13.0, das nur als Vorabversion erschienen ist: Suche, Links, Passwort, Anmerkungen, Unterschrift und Formulare (Einzelheiten unter 0.13.0).
+
 ## 0.13.0
 
 - Suchen mit Strg+F: Treffer sind auf den Seiten markiert, Enter oder F3 springt zum nächsten, mit Umschalt zurück. Den Text großer PDFs liest Fletta beim ersten Suchen im Hintergrund, danach ist jede Suche sofort da.
