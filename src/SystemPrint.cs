@@ -2,6 +2,7 @@ using System.Runtime.InteropServices;
 using System.Runtime.InteropServices.Marshalling;
 using System.Windows;
 using System.Windows.Threading;
+using Fletta.Pdfium;
 using Windows.Graphics.Printing;
 
 namespace Fletta;
@@ -92,7 +93,7 @@ public sealed record PrintJob(PageRenderer Renderer, IReadOnlyList<Size> PageSiz
         var shown = ShownSize(page, turns);
         var scale = Math.Min(sheetWidth / shown.Width, sheetHeight / shown.Height);
         int width = Math.Max(1, (int)(shown.Width * scale)), height = Math.Max(1, (int)(shown.Height * scale));
-        var bitmap = Renderer.Invoke(document => document.Render(page, width, height, 96, 96, turns))
+        var bitmap = Renderer.Invoke(document => document.Render(page, width, height, 96, 96, turns, RenderPurpose.Print))
                              .GetAwaiter().GetResult();
         var offset = (sheetHeight - height) / 2 * stride + (sheetWidth - width) / 2 * 4;
         bitmap.CopyPixels(new Int32Rect(0, 0, width, height), sheet, stride, offset);

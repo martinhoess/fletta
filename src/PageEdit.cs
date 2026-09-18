@@ -16,7 +16,12 @@ public abstract record PageEdit
     /// <summary>perPage nach der Änderung; neue Seiten bekommen added. newCount ist die Seitenzahl danach.</summary>
     public abstract T[] Remap<T>(IReadOnlyList<T> perPage, int newCount, T added);
 
-    /// <summary>Betrifft die Änderung nur eine Seite (Anmerkungen)? Dann rendert das Fenster nur sie neu und bleibt, wo es ist.</summary>
+    /// <summary>
+    /// Bleiben Seitenfolge und -größen (Anmerkungen, Formulare)? Dann rendert das Fenster nur neu und bleibt, wo es ist —
+    /// nur OnlyPage, wenn gesetzt, sonst alle Seiten (ein Feld kann auf mehreren Seiten stehen).
+    /// </summary>
+    public virtual bool KeepsPages => false;
+
     public virtual int? OnlyPage => null;
 }
 
@@ -75,6 +80,8 @@ public abstract record AnnotationEdit(int Page) : PageEdit
     public static readonly Color InkColor = Color.FromRgb(214, 40, 40);
     public static readonly Color SignatureColor = Color.FromRgb(20, 40, 120);
     public static readonly Color TextColor = Colors.Black;
+
+    public override bool KeepsPages => true;
 
     public override int? OnlyPage => Page;
 
@@ -158,4 +165,31 @@ public sealed record RemoveAnnotation(int Page, int Index) : AnnotationEdit(Page
 public sealed record SetNoteText(int Page, int Index, string Text) : AnnotationEdit(Page)
 {
     public override void Apply(PdfDocument document) => document.SetAnnotationText(Page, Index, Text);
+}
+
+/// <summary>
+/// Formular (Stufe 4): ein Feld (Widget Nummer Index auf Page) ausfüllen. Felder mit gleichem Namen teilen den Wert, auch
+/// über Seiten hinweg — deshalb rendert das Fenster danach alle Seiten neu (OnlyPage bleibt null).
+/// </summary>
+public abstract record FormEdit(int Page, int Index) : PageEdit
+{
+    public override bool KeepsPages => true;
+
+    public override T[] Remap<T>(IReadOnlyList<T> perPage, int newCount, T added) => [.. perPage];
+}
+
+public sealed record SetFieldText(int Page, int Index, string Text) : FormEdit(Page, Index)
+{
+    public override void Apply(PdfDocument document) => document.SetFieldText(Page, Index, Text);
+}
+
+/// <summary>Kästchen oder Optionsfeld umschalten.</summary>
+public sealed record ClickField(int Page, int Index) : FormEdit(Page, Index)
+{
+    public override void Apply(PdfDocument document) => document.ClickField(Page, Index);
+}
+
+public sealed record SetFieldChoice(int Page, int Index, int Option) : FormEdit(Page, Index)
+{
+    public override void Apply(PdfDocument document) => document.SetFieldChoice(Page, Index, Option);
 }
