@@ -53,6 +53,7 @@ public partial class MainWindow : Window
         new("Klick auf einen Link", "springt zur Seite oder öffnet die Adresse im Browser"),
         new("Anmerkungen", "Werkzeuge oben: Textmarker, Notiz, Freihand, Text, Unterschrift; Esc beendet das Werkzeug"),
         new("Rechtsklick auf Anmerkung", "Notiz bearbeiten oder Anmerkung löschen"),
+        new("Klick in ein Formularfeld", "ausfüllen: Enter übernimmt, Tab springt weiter, Esc verwirft; Kästchen und Listen per Klick"),
         new("Strg+P", "drucken"),
         new("Strg+O", "öffnen (neues Fenster, wenn schon eines offen ist)"),
         new("F1 oder ?", "diese Übersicht"),
@@ -90,8 +91,11 @@ public partial class MainWindow : Window
     readonly Dictionary<int, RenderResult> rendered = []; // nur erfolgreiche: Bild samt Auftrag, zu dem es gehört
     readonly Dictionary<int, string> pageErrors = [];
     /// <summary>Links (Stufe 2) und Anmerkungen (Stufe 3) einer Seite, gelesen im Hintergrund nach ihrem ersten Bild.</summary>
-    sealed record PageItems(IReadOnlyList<PageLink> Links, IReadOnlyList<PageAnnotation> Annotations);
+    /// <summary>Revision: pageRevisions der Seite beim Lesen; weicht sie ab, liest das nächste Bild neu (die alten gelten bis dahin).</summary>
+    sealed record PageItems(IReadOnlyList<PageLink> Links, IReadOnlyList<PageAnnotation> Annotations, IReadOnlyList<FormField> Fields, int Revision);
     readonly Dictionary<int, PageItems> pageItems = [];
+    readonly HashSet<int> itemsLoading = [];
+    int itemsGeneration; // Seitenfolge neu (ShowPages, Schließen): laufende Antworten verfallen
     int[] pageRevisions = []; // je Seite: Anmerkungen seit dem Laden, siehe RenderRequest.Revision
     long droppedPixels; // verworfene Seitenbilder seit dem letzten Anstoß des GC, siehe Discard
     bool measurePending;
@@ -249,7 +253,7 @@ public partial class MainWindow : Window
     const string UnsavedSignal = @"Local\Fletta-unsaved"; // offen, solange ein Fenster ungespeicherte Änderungen hat
 
     /// <summary>Für App.OnSessionEnding: Abmelden oder Herunterfahren soll die Änderungen nicht stillschweigend verwerfen.</summary>
-    public bool HasUnsavedEdits => edits.Count > 0;
+    public bool HasUnsavedEdits => edits.Count > 0 || FieldEditorChanged;
 
     /// <summary>Nach jeder Änderung an edits: Titel, Speichern-Knopf und prozessübergreifendes Signal nachführen.</summary>
     void EditsChanged()
@@ -307,6 +311,7 @@ public partial class MainWindow : Window
         if (renderer != opening) return; // Fenster inzwischen geschlossen
         App.Mark("dokument");
         App.RegisterRestart(path);
+        NoticeXfa(opening);
         if (pagesPt.Count == 0)
         {
             CloseDocument();
@@ -323,6 +328,17 @@ public partial class MainWindow : Window
         Thumbs.Show(pagesPt, quarterTurns, pageRevisions, sidebarWidth.Value);
         App.Mark("leiste");
         ApplyZoom();
+    }
+
+    /// <summary>XFA-Formulare kann das PDFium ohne XFA-Modul nur anzeigen (oft nur eine Ersatzseite): das sagen.</summary>
+    async void NoticeXfa(PageRenderer opening)
+    {
+        try
+        {
+            if (await opening.Invoke(document => document.FormType) == 2 && renderer == opening)
+                ShowNotice("XFA-Formular: Fletta kann es nur anzeigen, nicht ausfüllen");
+        }
+        catch (TaskCanceledException) { }
     }
 
     /// <summary>Dunkle Rückfrage mit Passwortfeld; null bei Abbrechen.</summary>
@@ -365,8 +381,12 @@ public partial class MainWindow : Window
         pageTexts = [];
         pageRevisions = [];
         pageItems.Clear();
+        itemsLoading.Clear();
+        itemsGeneration++;
+        choosing = null;
         charBoxes.Clear();
         sketches.Clear(); // hängen an PageCanvas, das gleich geleert wird
+        CloseFieldEditor();
         SetTool(Tool.None);
         titlePage = -1;
         pinnedOffset = null;
@@ -590,6 +610,7 @@ public partial class MainWindow : Window
 
         mainWanted = Wanted(first, last, neighbours);
         RequestRenders();
+        PlaceFieldEditor();
         // Festgehalten (Sprung, Zoom, Drehen): die Seite bleibt aktuell, bis jemand selbst scrollt —
         // auch wenn sie am Dokumentende nicht nach oben rollen kann.
         // Gegen das tatsächlich erreichbare Ziel: verschwindet beim Zoomen die waagrechte Leiste,
@@ -862,6 +883,7 @@ public partial class MainWindow : Window
     /// <summary>Strg+P: moderner Windows-Druckdialog mit echter Vorschau; PDFium rendert auf dem Render-Thread.</summary>
     async void Print()
     {
+        await FlushFieldEditor();
         if (layout is null || renderer is null || busy) return;
         // Eine einzelne markierte Miniatur ist nur der Klickfokus, erst ab zwei ist es eine Auswahl.
         var selected = Thumbs.SelectedPages;
@@ -1002,8 +1024,8 @@ public partial class MainWindow : Window
 
     protected override void OnPreviewKeyDown(KeyEventArgs e)
     {
-        // Im Seitenfeld gehören die Tasten dem Feld; Enter und Esc behandelt OnPageBoxKeyDown.
-        if (PageBox.IsKeyboardFocused)
+        // Im Seitenfeld und im Eingabefeld eines Formulars gehören die Tasten dem Feld (Enter, Esc, Tab behandeln die selbst).
+        if (PageBox.IsKeyboardFocused || fieldEditor?.IsKeyboardFocused == true)
         {
             base.OnPreviewKeyDown(e);
             return;
@@ -1082,7 +1104,7 @@ public partial class MainWindow : Window
     /// <summary>„?“ liegt je nach Tastatur auf verschiedenen Tasten (deutsch: Umschalt+ß) — daher über den Text.</summary>
     protected override void OnPreviewTextInput(TextCompositionEventArgs e)
     {
-        if (e.Text == "?" && !PageBox.IsKeyboardFocused && !SearchBox.IsKeyboardFocused)
+        if (e.Text == "?" && !PageBox.IsKeyboardFocused && !SearchBox.IsKeyboardFocused && fieldEditor?.IsKeyboardFocused != true)
         {
             ToggleHelp();
             e.Handled = true;
@@ -1100,9 +1122,16 @@ public partial class MainWindow : Window
     {
         var point = e.GetPosition(Scroller);
         if (layout is null || point.X >= Scroller.ViewportWidth || point.Y >= Scroller.ViewportHeight) return;
+        if (fieldEditor?.IsMouseOver == true) return; // Klick ins offene Eingabefeld: Schreibmarke setzen, nicht neu öffnen
+        choosing = null; // ein früher gedrücktes Auswahlfeld, das anderswo losgelassen wurde, gilt nicht mehr
         if (tool != Tool.None)
         {
             BeginGesture(e); // mit einem Werkzeug zeichnet oder markiert die Maus, statt zu scrollen
+            return;
+        }
+        if (ClickFieldAt(e.GetPosition(PageCanvas)))
+        {
+            e.Handled = true; // kein Ziehen, und der ScrollViewer nimmt dem Eingabefeld den Fokus nicht
             return;
         }
         dragging = true;
@@ -1149,6 +1178,7 @@ public partial class MainWindow : Window
             FinishGesture(e);
             return;
         }
+        if (OpenPendingChoices()) return;
         var moved = e.GetPosition(Scroller) - dragFrom;
         var clicked = dragging && Math.Abs(moved.X) < SystemParameters.MinimumHorizontalDragDistance
                                && Math.Abs(moved.Y) < SystemParameters.MinimumVerticalDragDistance;
@@ -1163,15 +1193,28 @@ public partial class MainWindow : Window
     /// </summary>
     async void LoadPageItems(int page)
     {
-        if (renderer is not { } reader || pageItems.ContainsKey(page)) return;
-        var placeholder = new PageItems([], []);
-        pageItems[page] = placeholder;
+        if (renderer is not { } reader || itemsLoading.Contains(page) || page >= pageRevisions.Length) return;
+        var revision = pageRevisions[page];
+        if (pageItems.TryGetValue(page, out var known) && known.Revision == revision) return;
+        var generation = itemsGeneration;
+        itemsLoading.Add(page);
+        PageItems items;
         try
         {
-            var items = await reader.Invoke(document => new PageItems(document.Links(page), document.Annotations(page)), whenIdle: true);
-            if (reader == renderer && pageItems.TryGetValue(page, out var current) && ReferenceEquals(current, placeholder)) pageItems[page] = items;
+            items = await reader.Invoke(document => new PageItems(document.Links(page), document.Annotations(page), document.FormFields(page), revision), whenIdle: true);
         }
-        catch (Exception e) when (e is PdfException or TaskCanceledException) { }
+        catch (PdfException)
+        {
+            items = new PageItems([], [], [], revision); // kaputte Seite: ohne Links und Felder, nicht bei jedem Bild neu versuchen
+        }
+        catch (TaskCanceledException)
+        {
+            return; // Renderer beendet; ShowPages oder CloseDocument räumen itemsLoading
+        }
+        if (reader != renderer || generation != itemsGeneration) return;
+        itemsLoading.Remove(page);
+        if (revision == pageRevisions[page]) pageItems[page] = items;
+        else LoadPageItems(page); // inzwischen geändert: gleich noch einmal, die alten gelten bis dahin
     }
 
     /// <summary>Seite unter einer Stelle der Leinwand und die Stelle in Anteilen der Ansicht (mit Flettas Drehung).</summary>
@@ -1203,9 +1246,11 @@ public partial class MainWindow : Window
     {
         var point = e.GetPosition(PageCanvas);
         var link = layout is null || tool != Tool.None ? null : LinkAt(point);
-        var annotation = layout is null || link is not null ? null : AnnotationAt(point);
-        PageCanvas.Cursor = link is not null ? Cursors.Hand : ToolCursor();
+        var field = layout is null || tool != Tool.None || link is not null ? null : FieldAt(point);
+        var annotation = layout is null || link is not null || field is not null ? null : AnnotationAt(point);
+        PageCanvas.Cursor = link is not null ? Cursors.Hand : field is { } hit ? FieldCursor(hit.Field) : ToolCursor();
         var tip = link is not null ? (link.Page >= 0 ? $"Seite {link.Page + 1}" : link.Uri)
+                : field is { } under ? FieldTip(under.Field)
                 : annotation is { } found ? AnnotationTip(found.Annotation) : null;
         if (!Equals(PageCanvas.ToolTip, tip)) PageCanvas.ToolTip = tip;
     }
@@ -1512,6 +1557,9 @@ public partial class MainWindow : Window
     /// <returns>Seitenzahl danach, −1 wenn nichts geschah.</returns>
     async Task<int> Edit(PageEdit edit, int focusPage)
     {
+        // Ein offenes Formular-Eingabefeld zuerst übernehmen: sonst zeigte es nach einer Anmerkung auf eine verschobene
+        // Nummer, oder sein Text ginge verloren (Review 2026-09-18).
+        await FlushFieldEditor();
         if (renderer is null || BlockedByWork()) return -1;
         var opening = renderer;
         busy = true;
@@ -1525,12 +1573,21 @@ public partial class MainWindow : Window
                 return PageRenderer.SizesOf(document);
             });
             if (renderer != opening) return -1;
-            if (edit.OnlyPage is { } changed)
+            if (edit.KeepsPages)
             {
-                // Anmerkung: nur diese Seite neu rendern, die Ansicht bleibt stehen; das alte Bild bis dahin auch.
+                // Anmerkung oder Formular: nur neu rendern, die Ansicht bleibt stehen; die alten Bilder bis dahin auch.
                 edits.Add((edit, (int[])quarterTurns.Clone(), pageTexts));
-                pageRevisions[changed]++;
-                pageItems.Remove(changed);
+                if (edit.OnlyPage is { } changed)
+                {
+                    pageRevisions[changed]++;
+                    pageItems.Remove(changed);
+                }
+                else
+                {
+                    // Formular: Lage und Nummern der Felder bleiben, die Listen gelten weiter und werden im Hintergrund
+                    // erneuert (Revision). Leer dazwischen fand Tab kein nächstes Feld (Review 2026-09-18).
+                    for (var page = 0; page < pageRevisions.Length; page++) pageRevisions[page]++;
+                }
                 EditsChanged();
                 busy = false;
                 Thumbs.Invalidate();
@@ -1574,6 +1631,7 @@ public partial class MainWindow : Window
     void ShowPages(IReadOnlyList<Size> sizes, int focusPage)
     {
         CancelGesture(); // die Seitennummer des Zugs gilt nicht mehr
+        CloseFieldEditor(); // ebenso die des Formularfelds
         pagesPt = sizes;
         foreach (var result in rendered.Values) Discard(result);
         slots.Clear();
@@ -1581,6 +1639,9 @@ public partial class MainWindow : Window
         rendered.Clear();
         pageErrors.Clear();
         pageItems.Clear();
+        itemsLoading.Clear();
+        itemsGeneration++;
+        choosing = null;
         charBoxes.Clear();
         sketches.Clear(); // hängen an PageCanvas und gehen mit dessen Kindern
         pageRevisions = new int[sizes.Count];
@@ -1661,6 +1722,7 @@ public partial class MainWindow : Window
     /// </summary>
     async Task<bool> Save()
     {
+        await FlushFieldEditor(); // der Speichern-Knopf nimmt dem Eingabefeld den Fokus nicht (Review 2026-09-18)
         if (renderer is null || layout is null || BlockedByWork()) return false;
         var turns = (int[])quarterTurns.Clone();
         if (edits.Count == 0 && turns.All(turn => turn == 0))
@@ -1764,6 +1826,13 @@ public partial class MainWindow : Window
         {
             e.Cancel = true;
             ShowNotice("Einen Moment – die Änderung wird noch geschrieben");
+            return;
+        }
+        if (FieldEditorChanged && !closeConfirmed)
+        {
+            // Getippt, noch nicht übernommen: erst übernehmen, dann wie jede ungespeicherte Änderung nachfragen.
+            e.Cancel = true;
+            FlushThenClose();
             return;
         }
         if (edits.Count > 0 && !closeConfirmed)

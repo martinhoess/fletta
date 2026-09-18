@@ -154,7 +154,7 @@ public sealed class PageRenderer : IDisposable
                 RenderResult result;
                 try
                 {
-                    result = new(job, document.Render(job.Page, job.PixelWidth, job.PixelHeight, job.DpiX, job.DpiY, job.QuarterTurns), null);
+                    result = new(job, document.Render(job.Page, job.PixelWidth, job.PixelHeight, job.DpiX, job.DpiY, job.QuarterTurns, RenderPurpose.Screen), null);
                 }
                 catch (Exception e) when (e is PdfException or OutOfMemoryException)
                 {

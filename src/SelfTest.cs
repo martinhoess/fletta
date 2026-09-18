@@ -56,6 +56,7 @@ static class SelfTest
             failures += PasswordChecks(dir.FullName);
             failures += EditChecks(good, dir.FullName);
             failures += AnnotationChecks(good, dir.FullName);
+            failures += FormChecks(dir.FullName);
             failures += RendererChecks(good, junk, dir.FullName);
         }
         finally
@@ -410,6 +411,106 @@ static class SelfTest
         var (cleaned, width, height) = Signatures.Clean([.. white, .. white, .. white, .. ink, .. white, .. white], 3, 2);
         failures += Check("Unterschrift aus Bild: weiß wird durchsichtig, zugeschnitten", width == 1 && height == 1 && cleaned.SequenceEqual(ink));
         return failures;
+    }
+
+    /// <summary>
+    /// Formular (Stufe 4): Textfeld „Name“, Kästchen „Ja“ (Erscheinung „Yes“ = schwarzes Quadrat), Auswahlfeld „Farbe“
+    /// mit Rot/Grün/Blau. Ausfüllen über die FORM_-Funktionen, im Bild sehen, speichern, wieder lesen.
+    /// </summary>
+    static int FormChecks(string dir)
+    {
+        var failures = 0;
+        var path = Path.Combine(dir, "Formular.pdf");
+        File.WriteAllBytes(path, FormPdf());
+        var saved = Path.Combine(dir, "Formular ausgefüllt.pdf");
+        using (var doc = PdfDocument.Open(path))
+        {
+            var fields = doc.FormFields(0);
+            failures += Check("Formular: AcroForm mit vier Feldern, das versteckte fehlt", doc.FormType == 1 && fields.Count == 4
+                && fields[0] is { Type: 6, Name: "Name", Value: "" } && fields[1] is { Type: 2, Name: "Ja", Checked: false }
+                && fields[2] is { Type: 4, Name: "Farbe", Selected: 0 } && fields[2].Options.SequenceEqual(["Rot", "Grün", "Blau"])
+                && fields[3] is { Type: 1, Name: "Drucken", Fillable: false });
+            var empty = doc.Render(0, 400, 400, 72, 72, 0, RenderPurpose.Screen);
+            failures += Check("Formular: Felder hellblau hinterlegt nur auf dem Bildschirm",
+                IsFieldBlue(RgbAt(empty, 370, 85)) && RgbAt(doc.Render(0, 400, 400, 72, 72, 0), 370, 85) == 0xFFFFFF);
+            // Schaltfläche ohne Druck-Flag (unten rechts, schwarz): auf dem Bildschirm und in der Kopie da, im Druck nicht.
+            failures += Check("Formular: Knopf ohne Druck-Flag fehlt nur im Druck",
+                IsDark(RgbAt(empty, 340, 360)) && IsDark(RgbAt(doc.Render(0, 400, 400, 72, 72, 0), 340, 360))
+                && RgbAt(doc.Render(0, 400, 400, 72, 72, 0, RenderPurpose.Print), 340, 360) == 0xFFFFFF
+                && IsDark(RgbAt(doc.Render(0, 400, 400, 72, 72, 0), 340, 360))); // Flags danach wieder wie vorher
+
+            new SetFieldText(0, 0, "Erika Musterfrau").Apply(doc);
+            new ClickField(0, 1).Apply(doc);
+            new SetFieldChoice(0, 2, 2).Apply(doc);
+            fields = doc.FormFields(0);
+            failures += Check("Formular: Werte übernommen", fields[0].Value == "Erika Musterfrau" && fields[1].Checked && fields[2] is { Selected: 2, Value: "Blau" });
+            var filled = doc.Render(0, 400, 400, 72, 72, 0);
+            failures += Check("Formular: Text und Haken im Bild", CountPixels(filled, fields[0].Area, IsDark) > 20 && IsDark(RgbAt(filled, 30, 140)));
+            new SetFieldText(0, 0, "").Apply(doc);
+            failures += Check("Formular: leerer Text leert das Feld", doc.FormFields(0)[0].Value == "");
+            new SetFieldText(0, 0, "Grüße aus Köln").Apply(doc);
+            // „Name“ steht auch auf Seite 2 (zweites Widget desselben Felds): Wert und Erscheinung ziehen mit.
+            failures += Check("Formular: gleiches Feld auf Seite 2 hat den Wert", doc.FormFields(1).SingleOrDefault()?.Value == "Grüße aus Köln");
+            failures += Check("Formular: gleiches Feld auf Seite 2 zeigt ihn", CountPixels(doc.Render(1, 400, 400, 72, 72, 0), doc.FormFields(1)[0].Area, IsDark) > 20);
+            doc.SaveAs(saved);
+        }
+        using (var reopened = PdfDocument.Open(saved))
+        {
+            var fields = reopened.FormFields(0);
+            failures += Check("Formular: Speichern behält die Werte",
+                fields[0].Value == "Grüße aus Köln" && fields[1].Checked && fields[2].Value == "Blau");
+            failures += Check("Formular: gespeichert zeigt auch Seite 2 den Wert",
+                CountPixels(reopened.Render(1, 400, 400, 72, 72, 0), reopened.FormFields(1)[0].Area, IsDark) > 20);
+        }
+        // Wie eben, aber Seite 2 war nie geladen: steht die neue Erscheinung trotzdem in der Datei? Andere Programme zeigen
+        // die Erscheinung, nicht den Wert (Review 2026-09-18).
+        var untouched = Path.Combine(dir, "Formular Seite 2 nie gesehen.pdf");
+        using (var doc = PdfDocument.Open(path))
+        {
+            new SetFieldText(0, 0, "Nur Seite eins").Apply(doc);
+            doc.SaveAs(untouched);
+        }
+        using (var reopened = PdfDocument.Open(untouched))
+        {
+            var appearance = reopened.AppearanceOf(1, 0);
+            failures += Check("Formular: Erscheinung auf nie geladener Seite 2 erneuert", appearance.Contains("Tj"));
+        }
+        return failures;
+    }
+
+    static bool IsFieldBlue(int rgb) => (rgb & 255) > 230 && (rgb >> 16 & 255) < 250 && (rgb >> 16 & 255) > 150;
+
+    /// <summary>
+    /// Zwei Seiten 400 × 400 mit AcroForm. Seite 1: Textfeld „Name“ (20–380 × 300–330), Kästchen (20–40 × 250–270), Auswahl
+    /// (20–200 × 190–215), Schaltfläche „Drucken“ ohne Druck-Flag (300–380 × 20–60, schwarz), ein verstecktes Textfeld.
+    /// Seite 2: zweites Widget von „Name“ an derselben Stelle.
+    /// </summary>
+    static byte[] FormPdf()
+    {
+        const string content = "BT /F1 12 Tf 20 360 Td (Formular) Tj ET";
+        const string check = "0 g 3 3 14 14 re f";
+        const string button = "0 g 0 0 80 40 re f";
+        string[] objects =
+        [
+            "<< /Type /Catalog /Pages 2 0 R /AcroForm 6 0 R >>",
+            "<< /Type /Pages /Kids [3 0 R 12 0 R] /Count 2 >>",
+            "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 400 400] /Contents 4 0 R /Annots [7 0 R 8 0 R 9 0 R 14 0 R 17 0 R] /Resources << /Font << /F1 5 0 R >> >> >>",
+            $"<< /Length {content.Length} >>\nstream\n{content}\nendstream",
+            "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>",
+            "<< /Fields [15 0 R 8 0 R 9 0 R 14 0 R 17 0 R] /DA (/Helv 0 Tf 0 g) /DR << /Font << /Helv 5 0 R >> >> >>",
+            "<< /Type /Annot /Subtype /Widget /Parent 15 0 R /Rect [20 300 380 330] /P 3 0 R /F 4 >>",
+            "<< /Type /Annot /Subtype /Widget /FT /Btn /T (Ja) /Rect [20 250 40 270] /P 3 0 R /V /Off /AS /Off /F 4 /AP << /N << /Yes 10 0 R /Off 11 0 R >> >> >>",
+            "<< /Type /Annot /Subtype /Widget /FT /Ch /Ff 131072 /T (Farbe) /Opt [(Rot) (Gr\u00FCn) (Blau)] /V (Rot) /Rect [20 190 200 215] /P 3 0 R /DA (/Helv 12 Tf 0 g) /F 4 >>",
+            $"<< /Type /XObject /Subtype /Form /BBox [0 0 20 20] /Length {check.Length} >>\nstream\n{check}\nendstream",
+            "<< /Type /XObject /Subtype /Form /BBox [0 0 20 20] /Length 0 >>\nstream\n\nendstream",
+            "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 400 400] /Annots [13 0 R] >>",
+            "<< /Type /Annot /Subtype /Widget /Parent 15 0 R /Rect [20 300 380 330] /P 12 0 R /F 4 >>",
+            "<< /Type /Annot /Subtype /Widget /FT /Btn /Ff 65536 /T (Drucken) /Rect [300 20 380 60] /P 3 0 R /F 0 /AP << /N 16 0 R >> >>",
+            "<< /FT /Tx /T (Name) /DA (/Helv 14 Tf 0 g) /Kids [7 0 R 13 0 R] >>",
+            $"<< /Type /XObject /Subtype /Form /BBox [0 0 80 40] /Length {button.Length} >>\nstream\n{button}\nendstream",
+            "<< /Type /Annot /Subtype /Widget /FT /Tx /T (Versteckt) /Rect [20 100 380 130] /P 3 0 R /F 6 >>",
+        ];
+        return Pdf(objects);
     }
 
     static bool IsYellow(int rgb) => (rgb >> 16 & 255) > 200 && (rgb >> 8 & 255) > 170 && (rgb & 255) < 120;

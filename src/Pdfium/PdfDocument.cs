@@ -7,6 +7,12 @@ using System.Windows.Media.Imaging;
 
 namespace Fletta.Pdfium;
 
+/// <summary>
+/// Wofür gerendert wird: Bildschirm (ausfüllbare Felder hervorgehoben), Kopie (wie zu sehen, ohne Hervorhebung), Druck
+/// (FPDF_PRINTING: Anmerkungen ohne Druck-Flag und solche Formularfelder, etwa ein „Drucken“-Knopf, fallen weg).
+/// </summary>
+public enum RenderPurpose { Copy, Screen, Print }
+
 /// <summary>Ein geöffnetes PDF. PDFium ist nicht threadsicher: alle Aufrufe aus demselben Thread.</summary>
 public sealed class PdfDocument : IDisposable
 {
@@ -30,10 +36,60 @@ public sealed class PdfDocument : IDisposable
     // Einmal je Prozess; freigegeben wird beim Beenden vom Betriebssystem.
     static PdfDocument() => Native.FPDF_InitLibraryWithConfig(new Native.LibraryConfig { Version = 2 });
 
+    // Hellblau (R D6, G E4, B FF) hinter ausfüllbaren Feldern, nur auf dem Bildschirm. PDFium liest 0x00BBGGRR, obwohl
+    // fpdf_formfill.h „0xxxrrggbb“ sagt: 0xD6E4FF kam im Selbsttest als FF F5 F0 an, also orange (2026-09-18).
+    const uint FieldHighlight = 0xFFE4D6;
+    const byte FieldHighlightAlpha = 64; // PDFium legt es über den Feldtext; bei 90 wirkte der schon grau (VM, 2026-09-18)
+
     nint handle;
+    nint form; // Formularumgebung (Stufe 4), nur bei AcroForm; 0 ohne Formular
+    unsafe Native.FormFillInfo* formInfo; // muss leben, solange form lebt: PDFium behält den Zeiger
     readonly List<(int Index, nint Page)> openPages = []; // zuletzt benutzte hinten
 
     PdfDocument(nint handle) => this.handle = handle;
+
+    /// <summary>1 AcroForm, 2 und 3 XFA (nur angezeigt, nicht ausfüllbar), 0 ohne Formular.</summary>
+    public int FormType => Native.FPDF_GetFormType(handle);
+
+    /// <summary>
+    /// Formularumgebung für AcroForm: ohne sie zeichnet PDFium keine Formularfelder (FPDF_FFLDraw) und füllt keine aus.
+    /// Rückrufe als leere Hüllen — Fletta reicht keine Maus- oder Tastaturereignisse durch.
+    /// </summary>
+    unsafe void InitForm()
+    {
+        // 1 AcroForm, 3 AcroForm mit zusätzlichem XFA (LiveCycle-Hybrid): beide füllt dieses PDFium ohne XFA-Modul als
+        // AcroForm aus. Nur reines XFA (2) nicht (Review 2026-09-18).
+        if (FormType is not (1 or 3)) return;
+        formInfo = (Native.FormFillInfo*)NativeMemory.AllocZeroed((nuint)sizeof(Native.FormFillInfo));
+        formInfo->Version = 1;
+        formInfo->Invalidate = &IgnoreRect;
+        formInfo->OutputSelectedRect = &IgnoreRect;
+        formInfo->SetCursor = &IgnoreInt;
+        formInfo->SetTimer = &NoTimer;
+        formInfo->KillTimer = &IgnoreInt;
+        formInfo->OnChange = &Ignore;
+        formInfo->ExecuteNamedAction = &IgnoreBytes;
+        formInfo->SetTextFieldFocus = &IgnoreFocus;
+        formInfo->DoUriAction = &IgnoreBytes;
+        formInfo->DoGoToAction = &IgnoreGoTo;
+        form = Native.FPDFDOC_InitFormFillEnvironment(handle, formInfo);
+        if (form == 0)
+        {
+            NativeMemory.Free(formInfo);
+            formInfo = null;
+            return;
+        }
+        Native.FPDF_SetFormFieldHighlightColor(form, 0, FieldHighlight);
+    }
+
+    [UnmanagedCallersOnly] static unsafe void Ignore(Native.FormFillInfo* self) { }
+    [UnmanagedCallersOnly] static unsafe void IgnoreInt(Native.FormFillInfo* self, int value) { }
+    [UnmanagedCallersOnly] static unsafe void IgnoreBytes(Native.FormFillInfo* self, byte* value) { }
+    [UnmanagedCallersOnly] static unsafe void IgnoreRect(Native.FormFillInfo* self, nint page, double left, double top, double right, double bottom) { }
+    [UnmanagedCallersOnly] static unsafe void IgnoreFocus(Native.FormFillInfo* self, char* value, uint length, int focused) { }
+    [UnmanagedCallersOnly] static unsafe void IgnoreGoTo(Native.FormFillInfo* self, int page, int zoom, float* position, int count) { }
+    /// <summary>Kein Zeitgeber: der blinkt nur die Schreibmarke, und die zeigt Flettas eigenes Eingabefeld.</summary>
+    [UnmanagedCallersOnly] static unsafe int NoTimer(Native.FormFillInfo* self, int elapse, nint callback) => 0;
 
     /// <summary>Für den Selbsttest: so viele Seiten hält das Dokument gerade offen.</summary>
     internal int OpenPageCount => openPages.Count;
@@ -58,7 +114,10 @@ public sealed class PdfDocument : IDisposable
     public static PdfDocument Open(string path, string? password = null)
     {
         var handle = Native.FPDF_LoadDocument(path, password);
-        return handle == 0 ? throw new PdfException(Native.FPDF_GetLastError()) : new PdfDocument(handle);
+        if (handle == 0) throw new PdfException(Native.FPDF_GetLastError());
+        var document = new PdfDocument(handle);
+        document.InitForm();
+        return document;
     }
 
     /// <summary>Seitengröße in PDF-Punkten (1/72 Zoll), ohne die Seite zu laden.</summary>
@@ -73,10 +132,12 @@ public sealed class PdfDocument : IDisposable
     /// <summary>
     /// Rendert eine Seite auf weißem Grund in genau diese Pixelgröße. quarterTurns dreht zusätzlich
     /// zum /Rotate des PDFs im Uhrzeigersinn (0–3, der rotate-Wert von FPDF_RenderPageBitmap);
-    /// die Pixelgröße ist dann die gedrehte.
+    /// die Pixelgröße ist dann die gedrehte. purpose: siehe RenderPurpose.
     /// </summary>
-    public BitmapSource Render(int index, int pixelWidth, int pixelHeight, double dpiX, double dpiY, int quarterTurns)
+    public BitmapSource Render(int index, int pixelWidth, int pixelHeight, double dpiX, double dpiY, int quarterTurns,
+                               RenderPurpose purpose = RenderPurpose.Copy)
     {
+        var flags = RenderAnnotations | (purpose == RenderPurpose.Print ? RenderForPrinting : 0);
         var page = LoadPage(index);
         var bitmap = new WriteableBitmap(pixelWidth, pixelHeight, dpiX, dpiY, PixelFormats.Bgr32, null);
         bitmap.Lock();
@@ -87,7 +148,22 @@ public sealed class PdfDocument : IDisposable
                                                     bitmap.BackBuffer, bitmap.BackBufferStride);
             if (target == 0) throw new PdfException(PdfException.PageError);
             Native.FPDFBitmap_FillRect(target, 0, 0, pixelWidth, pixelHeight, White);
-            Native.FPDF_RenderPageBitmap(target, page, 0, 0, pixelWidth, pixelHeight, quarterTurns, RenderAnnotations);
+            Native.FPDF_RenderPageBitmap(target, page, 0, 0, pixelWidth, pixelHeight, quarterTurns, flags);
+            if (form != 0)
+            {
+                Native.FPDF_SetFormFieldHighlightAlpha(form, purpose == RenderPurpose.Screen ? FieldHighlightAlpha : (byte)0);
+                // FFLDraw fragt nur die Sichtbarkeit auf dem Bildschirm ab, nicht das Druck-Flag: Felder ohne Druck-Flag
+                // für den Druck kurz verstecken (Review 2026-09-18).
+                var hidden = purpose == RenderPurpose.Print ? HideUnprintableFields(page) : [];
+                try
+                {
+                    Native.FPDF_FFLDraw(form, target, page, 0, 0, pixelWidth, pixelHeight, quarterTurns, flags);
+                }
+                finally
+                {
+                    RestoreFlags(page, hidden);
+                }
+            }
             Native.FPDFBitmap_Destroy(target); // gibt nur die Hülle frei, der Puffer gehört WPF
             bitmap.AddDirtyRect(new Int32Rect(0, 0, pixelWidth, pixelHeight));
         }
@@ -275,7 +351,7 @@ public sealed class PdfDocument : IDisposable
             try
             {
                 var subtype = Native.FPDFAnnot_GetSubtype(annot);
-                if (subtype is Native.AnnotLink or Native.AnnotPopup or Native.AnnotWidget || !Native.FPDFAnnot_GetRect(annot, out var rect)) continue;
+                if (subtype is Native.AnnotLink or Native.AnnotPopup or Native.AnnotWidget || Invisible(annot) || !Native.FPDFAnnot_GetRect(annot, out var rect)) continue;
                 found.Add(new PageAnnotation(i, subtype, ToFraction(page, rect.Left, rect.Top, rect.Right, rect.Bottom), AnnotationText(annot)));
             }
             finally
@@ -472,6 +548,149 @@ public sealed class PdfDocument : IDisposable
         finally
         {
             foreach (var pageObject in objects.Skip(appended)) Native.FPDFPageObj_Destroy(pageObject);
+        }
+    }
+
+    /// <summary>Formularfelder ohne Druck-Flag verstecken; gibt ihre Nummern samt alten Flags zurück.</summary>
+    static List<(int Index, int Flags)> HideUnprintableFields(nint page)
+    {
+        var hidden = new List<(int, int)>();
+        var count = Native.FPDFPage_GetAnnotCount(page);
+        for (var i = 0; i < count; i++)
+        {
+            var annot = Native.FPDFPage_GetAnnot(page, i);
+            if (annot == 0) continue;
+            var flags = Native.FPDFAnnot_GetFlags(annot);
+            if (Native.FPDFAnnot_GetSubtype(annot) == Native.AnnotWidget && (flags & (Native.AnnotFlagPrint | Native.AnnotFlagHidden)) == 0
+                && Native.FPDFAnnot_SetFlags(annot, flags | Native.AnnotFlagHidden))
+                hidden.Add((i, flags));
+            Native.FPDFPage_CloseAnnot(annot);
+        }
+        return hidden;
+    }
+
+    static void RestoreFlags(nint page, List<(int Index, int Flags)> hidden)
+    {
+        foreach (var (index, flags) in hidden)
+        {
+            var annot = Native.FPDFPage_GetAnnot(page, index);
+            if (annot == 0) continue;
+            Native.FPDFAnnot_SetFlags(annot, flags);
+            Native.FPDFPage_CloseAnnot(annot);
+        }
+    }
+
+    /// <summary>Inhalt der normalen Erscheinung einer Anmerkung — für den Selbsttest (steht der Wert in der Datei?).</summary>
+    internal unsafe string AppearanceOf(int index, int annotIndex)
+    {
+        var annot = Native.FPDFPage_GetAnnot(LoadPage(index), annotIndex);
+        if (annot == 0) return "";
+        try { return WideString((buffer, length) => Native.FPDFAnnot_GetAP(annot, 0, buffer, length)); }
+        finally { Native.FPDFPage_CloseAnnot(annot); }
+    }
+
+    /// <summary>Unsichtbar (Hidden, NoView): zeichnet PDFium nicht, also bietet Fletta es auch nicht an.</summary>
+    static bool Invisible(nint annot) => (Native.FPDFAnnot_GetFlags(annot) & (Native.AnnotFlagHidden | Native.AnnotFlagNoView)) != 0;
+
+    /// <summary>Formularfelder der Seite (Widgets); leer ohne Formularumgebung.</summary>
+    public unsafe IReadOnlyList<FormField> FormFields(int index)
+    {
+        if (form == 0) return [];
+        var page = LoadPage(index);
+        var fields = new List<FormField>();
+        var count = Native.FPDFPage_GetAnnotCount(page);
+        for (var i = 0; i < count && fields.Count < MaxLinks; i++)
+        {
+            var annot = Native.FPDFPage_GetAnnot(page, i);
+            if (annot == 0) continue;
+            try
+            {
+                if (Native.FPDFAnnot_GetSubtype(annot) != Native.AnnotWidget || Invisible(annot) || !Native.FPDFAnnot_GetRect(annot, out var rect)) continue;
+                var type = Native.FPDFAnnot_GetFormFieldType(form, annot);
+                var options = new string[Math.Max(0, Native.FPDFAnnot_GetOptionCount(form, annot))];
+                for (var option = 0; option < options.Length; option++)
+                    options[option] = WideString((buffer, length) => Native.FPDFAnnot_GetOptionLabel(form, annot, option, buffer, length));
+                fields.Add(new FormField(i, type,
+                    WideString((buffer, length) => Native.FPDFAnnot_GetFormFieldName(form, annot, buffer, length)),
+                    WideString((buffer, length) => Native.FPDFAnnot_GetFormFieldValue(form, annot, buffer, length)),
+                    Native.FPDFAnnot_GetFormFieldFlags(form, annot),
+                    ToFraction(page, rect.Left, rect.Top, rect.Right, rect.Bottom),
+                    options,
+                    SelectedOption(annot, options.Length),
+                    type is Native.FormFieldCheckBox or Native.FormFieldRadioButton && Native.FPDFAnnot_IsChecked(form, annot),
+                    Native.FPDFAnnot_GetFontSize(form, annot, out var size) ? size : 0));
+            }
+            finally
+            {
+                Native.FPDFPage_CloseAnnot(annot);
+            }
+        }
+        return fields;
+    }
+
+    /// <summary>Erste gewählte Möglichkeit eines Auswahlfelds, −1 ohne.</summary>
+    int SelectedOption(nint annot, int count)
+    {
+        for (var option = 0; option < count; option++)
+            if (Native.FPDFAnnot_IsOptionSelected(form, annot, option)) return option;
+        return -1;
+    }
+
+    unsafe delegate uint WideGetter(void* buffer, uint length);
+
+    /// <summary>PDFium-Muster für Texte: erst die Länge in Bytes samt Terminator, dann UTF-16LE hinein.</summary>
+    static unsafe string WideString(WideGetter get)
+    {
+        var length = get(null, 0);
+        if (length <= 2) return "";
+        var buffer = new byte[length];
+        fixed (byte* target = buffer) get(target, length);
+        return Encoding.Unicode.GetString(buffer, 0, (int)length - 2);
+    }
+
+    /// <summary>
+    /// Textfeld füllen wie mit der Tastatur: Feld fokussieren, alles markieren, ersetzen, Fokus weg — erst dann übernimmt
+    /// PDFium den Wert und zeichnet die Erscheinung neu. Leerer Text leert das Feld.
+    /// </summary>
+    public unsafe void SetFieldText(int index, int annotIndex, string text) => WithField(index, annotIndex, (page, annot) =>
+    {
+        Check(Native.FORM_SetFocusedAnnot(form, annot));
+        Native.FORM_SelectAllText(form, page); // false bei leerem Feld — dann fügt ReplaceSelection einfach ein
+        fixed (char* value = text) Native.FORM_ReplaceSelection(form, page, value);
+    });
+
+    /// <summary>
+    /// Kästchen oder Optionsfeld: fokussieren und Leertaste, wie mit der Tastatur — PDFium schaltet selbst um.
+    /// FORM_OnLButtonDown auf die Feldmitte lieferte im Selbsttest false und schaltete nichts (2026-09-18).
+    /// </summary>
+    public void ClickField(int index, int annotIndex) => WithField(index, annotIndex, (page, annot) =>
+    {
+        Check(Native.FORM_SetFocusedAnnot(form, annot));
+        Check(Native.FORM_OnChar(form, page, ' ', 0));
+    });
+
+    /// <summary>Auswahl- oder Listenfeld: Möglichkeit option wählen.</summary>
+    public void SetFieldChoice(int index, int annotIndex, int option) => WithField(index, annotIndex, (page, annot) =>
+    {
+        Check(Native.FORM_SetFocusedAnnot(form, annot));
+        Check(Native.FORM_SetIndexSelected(form, page, option, true));
+    });
+
+    /// <summary>Feld holen, bearbeiten, Fokus in jedem Fall wieder weg (erst das übernimmt den Wert), Hülle schließen.</summary>
+    void WithField(int index, int annotIndex, Action<nint, nint> change)
+    {
+        if (form == 0) throw new PdfException(PdfException.EditError);
+        var page = LoadPage(index);
+        var annot = Native.FPDFPage_GetAnnot(page, annotIndex);
+        if (annot == 0) throw new PdfException(PdfException.EditError);
+        try
+        {
+            change(page, annot);
+        }
+        finally
+        {
+            Native.FORM_ForceToKillFocus(form);
+            Native.FPDFPage_CloseAnnot(annot);
         }
     }
 
@@ -745,10 +964,11 @@ public sealed class PdfDocument : IDisposable
         }
         var page = Native.FPDF_LoadPage(handle, index);
         if (page == 0) throw new PdfException(PdfException.PageError);
+        if (form != 0) Native.FORM_OnAfterLoadPage(page, form);
         openPages.Add((index, page));
         if (openPages.Count > KeepPagesOpen)
         {
-            Native.FPDF_ClosePage(openPages[0].Page);
+            ClosePage(openPages[0].Page);
             openPages.RemoveAt(0);
         }
         return page;
@@ -763,14 +983,31 @@ public sealed class PdfDocument : IDisposable
     /// <summary>Vor jeder Änderung an Seiten und vor dem Schließen: offene Seiten dürfen das Dokument nicht überleben.</summary>
     void ClosePages()
     {
-        foreach (var (_, page) in openPages) Native.FPDF_ClosePage(page);
+        foreach (var (_, page) in openPages) ClosePage(page);
         openPages.Clear();
     }
 
-    public void Dispose()
+    /// <summary>Die Formularumgebung hält je Seite eine Ansicht; die muss vor der Seite weg, sonst zeigt sie ins Leere.</summary>
+    void ClosePage(nint page)
+    {
+        if (form != 0) Native.FORM_OnBeforeClosePage(page, form);
+        Native.FPDF_ClosePage(page);
+    }
+
+    public unsafe void Dispose()
     {
         if (handle == 0) return;
         ClosePages();
+        if (form != 0)
+        {
+            Native.FPDFDOC_ExitFormFillEnvironment(form);
+            form = 0;
+        }
+        if (formInfo != null)
+        {
+            NativeMemory.Free(formInfo);
+            formInfo = null;
+        }
         Native.FPDF_CloseDocument(handle);
         handle = 0;
     }
