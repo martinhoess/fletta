@@ -93,7 +93,8 @@ Danach öffnet sich „Standard-Apps“: dort `.pdf` auf Fletta stellen — den 
 Windows nur der Benutzer setzen. Abmelden: `Fletta.exe --unregister`.
 
 Updates: Fletta fragt höchstens einmal am Tag bei GitHub nach der neuesten Version. Gibt es eine,
-steht oben rechts „Aktualisieren“. Der Knopf lädt das Setup, prüft es gegen die SHA-256-Summe aus
+steht oben rechts „Aktualisieren“. Der Knopf „Updates“ in der Werkzeugleiste prüft sofort und schaltet
+Vorabversionen (Tag `vX.Y.Z-pre`) zu — dann fragt Fletta stündlich und bietet auch diese an. Der Knopf lädt das Setup, prüft es gegen die SHA-256-Summe aus
 dem Release und installiert es. Offene Fenster gehen dabei zu und kommen mit ihrer PDF wieder.
 
 Fletta merkt sich Fensterlage, Seitenleiste, Zoommodus, Doppelseite und seitenweises Blättern

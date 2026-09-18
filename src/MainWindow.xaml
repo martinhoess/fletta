@@ -56,6 +56,8 @@
         <ToggleButton x:Name="SignToolButton" AutomationProperties.Name="Unterschrift" Style="{StaticResource ToolToggle}" Content="{StaticResource IconSign}"
                       ToolTip="Unterschrift zeichnen, laden oder setzen" Click="OnSignToolClick" />
         <Rectangle Style="{StaticResource ToolSeparator}" />
+        <Button x:Name="UpdatesButton" Style="{StaticResource ToolButton}" Content="{StaticResource IconUpdate}"
+                AutomationProperties.Name="Updates" ToolTip="Updates: jetzt prüfen, Vorabversionen ein/aus" Click="OnUpdatesClick" />
         <Button Style="{StaticResource ToolButton}" Content="{StaticResource IconHelp}" ToolTip="Tastenkürzel (F1 oder ?)" Click="OnHelpClick" />
       </StackPanel>
       <!-- Nur mit ungespeicherten Änderungen sichtbar (wie „●“ im Titel); Klick speichert. -->

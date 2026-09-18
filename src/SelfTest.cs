@@ -171,12 +171,30 @@ static class SelfTest
         failures += Check("Update: ohne Prüfsumme kein Update", Updater.Parse(latest.Replace("sha256:ab12", "")) is null);
         failures += Check("Update: kaputte Antwort", Updater.Parse("<html>") is null && Updater.Parse("""{"message":"rate limit"}""") is null);
         failures += Check("Update: laufende Version dreistellig", Updater.Current.Revision == -1 && Updater.Current.Major >= 0);
+        // Liste von /releases, neueste zuerst: Vorabversion 0.14.0, Entwurf 0.15.0, Freigabe 0.13.0.
+        const string list = """
+            [{"tag_name":"v0.14.0-pre","prerelease":true,"draft":false,"assets":[{"name":"Fletta-0.14.0-setup.exe","browser_download_url":"https://x/pre","digest":"sha256:cc"}]},
+             {"tag_name":"v0.15.0","prerelease":false,"draft":true,"assets":[{"name":"Fletta-0.15.0-setup.exe","browser_download_url":"https://x/draft","digest":"sha256:dd"}]},
+             {"tag_name":"v0.13.0","prerelease":false,"draft":false,"assets":[{"name":"Fletta-0.13.0-setup.exe","browser_download_url":"https://x/rel","digest":"sha256:ee"}]}]
+            """;
+        failures += Check("Update: ohne Vorabversionen die Freigabe, Entwurf nie",
+            Updater.Newest(list, preReleases: false) == new Release(new Version(0, 13, 0), "Fletta-0.13.0-setup.exe", "https://x/rel", "ee"));
+        failures += Check("Update: mit Vorabversionen die neuere Vorabversion, „-pre“ abgetrennt",
+            Updater.Newest(list, preReleases: true) == new Release(new Version(0, 14, 0), "Fletta-0.14.0-setup.exe", "https://x/pre", "cc", PreRelease: true));
+        const string twins = """
+            [{"tag_name":"v0.13.1-pre","prerelease":true,"assets":[{"name":"Fletta-0.13.1-setup.exe","browser_download_url":"https://x/pre","digest":"sha256:aa"}]},
+             {"tag_name":"v0.13.1","prerelease":false,"assets":[{"name":"Fletta-0.13.1-setup.exe","browser_download_url":"https://x/rel","digest":"sha256:bb"}]}]
+            """;
+        failures += Check("Update: gleiche Nummer, Vorabversion zuerst gelistet: die Freigabe gewinnt",
+            Updater.Newest(twins, preReleases: true) is { PreRelease: false, SetupUrl: "https://x/rel" });
+        failures += Check("Update: kaputte Liste ergibt nichts", Updater.Newest("{}", true) is null && Updater.Newest("""[1, "x", {"tag_name": 5}]""", true) is null);
 
         // Einstellungen: Hin und zurück durch JSON, kaputte Datei, Fenster außerhalb des Bildschirms.
-        var saved = new AppSettings { Left = 100, Top = 50, Zoom = ZoomMode.FitPage, ZoomPercent = 150, Spreads = true, SidebarHidden = true };
+        var saved = new AppSettings { Left = 100, Top = 50, Zoom = ZoomMode.FitPage, ZoomPercent = 150, Spreads = true, SidebarHidden = true, PreReleases = true };
         failures += Check("Einstellungen überstehen JSON", AppSettings.Parse(saved.ToJson()) == saved);
         failures += Check("Einstellungen: Zoommodus als Text", saved.ToJson().Contains("\"FitPage\""));
         failures += Check("kaputte Einstellungen ergeben Standardwerte", AppSettings.Parse("{ kaputt") == new AppSettings());
+        failures += Check("Standardwerte (Lage NaN) lassen sich speichern und zurücklesen", AppSettings.Parse(new AppSettings { PreReleases = true }.ToJson()) == new AppSettings { PreReleases = true });
         var screen = new Rect(0, 0, 1920, 1080);
         failures += Check("Fenster auf dem Bildschirm bleibt", saved.FitsOn(screen));
         failures += Check("Fenster neben dem Bildschirm wird verworfen", !(saved with { Left = 3000 }).FitsOn(screen));

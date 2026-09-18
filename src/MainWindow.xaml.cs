@@ -123,6 +123,7 @@ public partial class MainWindow : Window
     string fileName = "";
     int printing;          // laufende Druckdialoge/-aufträge; solange bleibt der Renderer stehen
     Release? update;       // neuere Version auf GitHub, sobald CheckForUpdate eine gefunden hat
+    bool updating;         // „Aktualisieren“ lädt oder installiert: keine neue Prüfung, die den Hinweis überschriebe
     // Seitenänderungen seit dem Öffnen oder Speichern, je mit Drehung und gelesenem Text davor — Strg+Z nimmt die letzte zurück.
     readonly List<(PageEdit Edit, int[] TurnsBefore, string?[] TextsBefore)> edits = [];
     string documentPath = "";
@@ -191,35 +192,97 @@ public partial class MainWindow : Window
         if (!measure) CheckForUpdate();
     }
 
-    /// <summary>Neuere Version auf GitHub? Dann bleibt oben rechts ein Hinweis mit Knopf stehen; sonst passiert nichts.</summary>
-    async void CheckForUpdate()
+    /// <summary>
+    /// Neuere Version auf GitHub? Dann bleibt oben rechts ein Hinweis mit Knopf stehen; sonst passiert nichts. force
+    /// („Jetzt prüfen“) fragt an der gemerkten Antwort vorbei und meldet auch „aktuell“ und Fehler.
+    /// </summary>
+    async void CheckForUpdate(bool force = false)
     {
-        update = await Updater.FindNewerAsync();
-        if (update is null) return;
-        UpdateText.Text = $"Fletta {update.Version} ist da";
+        if (updating)
+        {
+            if (force) ShowNotice("Das Update läuft gerade");
+            return;
+        }
+        if (force)
+        {
+            ShowNotice("Suche nach Updates …");
+            noticeTimer.Stop(); // bleibt stehen, bis das Ergebnis ihn ersetzt (bis zu 15 s ohne Antwort)
+        }
+        Release? found;
+        try
+        {
+            found = await Updater.FindNewerAsync(AppSettings.Load().PreReleases, force);
+        }
+        catch (Exception e) when (e is HttpRequestException or OperationCanceledException or IOException or UnauthorizedAccessException)
+        {
+            ShowNotice($"Update-Prüfung fehlgeschlagen: {e.Message}");
+            return;
+        }
+        if (force) NoticePill.Visibility = Visibility.Collapsed; // „Suche nach Updates …“ ist beantwortet
+        if (updating) return; // „Aktualisieren“ kam dazwischen: dessen Hinweis gilt
+        update = found;
+        if (update is null)
+        {
+            UpdatePill.Visibility = Visibility.Collapsed; // ein älterer Hinweis (etwa auf eine Vorabversion) gilt nicht mehr
+            if (force) ShowNotice($"Fletta {Updater.Current} ist aktuell");
+            return;
+        }
+        UpdateText.Text = UpdateTitle(update);
+        UpdateButton.Content = "Aktualisieren";
+        UpdateButton.Visibility = Visibility.Visible;
+        UpdateButton.IsEnabled = UpdateCloseButton.IsEnabled = true;
         UpdatePill.Visibility = Visibility.Visible;
+    }
+
+    static string UpdateTitle(Release release) => release.PreRelease ? $"Vorabversion {release.Version} ist da" : $"Fletta {release.Version} ist da";
+
+    /// <summary>
+    /// Updates: installierte Version, Vorabversionen ein/aus, jetzt prüfen. Die Wahl gilt sofort und für alle Fenster
+    /// (settings.json); einschalten prüft gleich, damit eine eben erschienene Vorabversion nicht bis zur nächsten Stunde wartet.
+    /// </summary>
+    void OnUpdatesClick(object sender, RoutedEventArgs e)
+    {
+        var preReleases = new CheckBox
+        {
+            Content = "Auch Vorabversionen anbieten – zum Testen vor der Freigabe",
+            IsChecked = AppSettings.Load().PreReleases,
+            Foreground = (Brush)FindResource("TextBrush"),
+            Margin = new Thickness(0, 4, 0, 0),
+        };
+        var answer = AskDialog.Show(this,
+            $"Installiert: Fletta {Updater.Current}. Fletta sieht beim Start nach, ob es eine neuere Version gibt — höchstens einmal am Tag, mit Vorabversionen einmal in der Stunde.",
+            preReleases, "Jetzt prüfen", "Schließen");
+        // Frisch laden: während der Dialog offen war, kann ein anderes Fenster beim Schließen seine Lage geschrieben haben.
+        var settings = AppSettings.Load();
+        var wanted = preReleases.IsChecked == true;
+        if (wanted != settings.PreReleases) (settings with { PreReleases = wanted }).Save();
+        // Jede Änderung prüft neu: einschalten findet eine eben erschienene Vorabversion, ausschalten nimmt ihren Hinweis weg
+        // und zeigt stattdessen eine vorhandene Freigabe.
+        if (answer == 0 || wanted != settings.PreReleases) CheckForUpdate(force: true);
     }
 
     async void OnUpdateClick(object sender, RoutedEventArgs e)
     {
         await FlushFieldEditor(); // getippter Text zählt als Änderung; das Setup schlösse das Fenster hart (Review 2026-09-18)
-        if (update is null || PrintRunningAnywhere() || UnsavedAnywhere()) return;
+        // Eigene Kopie: eine Prüfung aus dem Updates-Dialog könnte das Feld sonst mitten im Laden ändern (Review 2026-09-18).
+        if (updating || update is not { } release || PrintRunningAnywhere() || UnsavedAnywhere()) return;
+        updating = true;
         UpdateButton.IsEnabled = UpdateCloseButton.IsEnabled = false;
-        UpdateText.Text = $"Fletta {update.Version} wird geladen …";
+        UpdateText.Text = $"Fletta {release.Version} wird geladen …";
         try
         {
-            var setup = await Updater.DownloadAsync(update);
+            var setup = await Updater.DownloadAsync(release);
             if (PrintRunningAnywhere() || UnsavedAnywhere()) // während des Ladens begonnen
             {
                 UpdateButton.IsEnabled = UpdateCloseButton.IsEnabled = true;
-                UpdateText.Text = $"Fletta {update.Version} ist da";
+                UpdateText.Text = UpdateTitle(release);
                 return;
             }
             UpdateText.Text = "Fletta wird aktualisiert …";
             // Das Setup schließt alle Fletta-Fenster aus seinem Ordner und öffnet sie danach wieder. Bleibt
             // dieses hier offen (anderer Ordner, Setup gescheitert), sagt der Hinweis, was passiert ist.
             var exitCode = await Updater.InstallAsync(setup);
-            UpdateText.Text = exitCode == 0 ? $"Fletta {update.Version} installiert – bitte neu starten" : $"Setup mit Code {exitCode} beendet";
+            UpdateText.Text = exitCode == 0 ? $"Fletta {release.Version} installiert – bitte neu starten" : $"Setup mit Code {exitCode} beendet";
             UpdateButton.Visibility = Visibility.Collapsed;
             UpdateCloseButton.IsEnabled = true;
         }
@@ -228,6 +291,10 @@ public partial class MainWindow : Window
             UpdateText.Text = $"Update fehlgeschlagen: {ex.Message}";
             UpdateButton.Content = "Erneut";
             UpdateButton.IsEnabled = UpdateCloseButton.IsEnabled = true;
+        }
+        finally
+        {
+            updating = false;
         }
     }
 
@@ -442,6 +509,8 @@ public partial class MainWindow : Window
             ZoomPercent = zoomPercent,
             Spreads = spreads,
             Paged = paged,
+            // Nicht aus dem Fenster, sondern aus der Datei: ein anderes Fenster kann es seit dem Start umgestellt haben.
+            PreReleases = AppSettings.Load().PreReleases,
         };
     }
 

@@ -22,6 +22,8 @@ public sealed record AppSettings
     public int ZoomPercent { get; init; } = 100;
     public bool Spreads { get; init; }
     public bool Paged { get; init; }
+    /// <summary>Update-Hinweis auch für Vorabversionen (Tag vX.Y.Z-pre), zum Testen vor der Freigabe.</summary>
+    public bool PreReleases { get; init; }
 
     static string FilePath => Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "Fletta", "settings.json");
 
@@ -62,8 +64,11 @@ public sealed record AppSettings
     }
 }
 
-/// <summary>Vom Compiler erzeugte JSON-Verarbeitung: kein Reflection-Aufwand beim Start.</summary>
-[JsonSourceGenerationOptions(WriteIndented = true, UseStringEnumConverter = true)]
+/// <summary>
+/// Vom Compiler erzeugte JSON-Verarbeitung: kein Reflection-Aufwand beim Start. NaN (Fensterlage noch nie gespeichert) als
+/// Text: ohne das warf schon das Speichern der Standardwerte — der Updates-Dialog stürzte ohne settings.json ab (VM, 2026-09-18).
+/// </summary>
+[JsonSourceGenerationOptions(WriteIndented = true, UseStringEnumConverter = true, NumberHandling = JsonNumberHandling.AllowNamedFloatingPointLiterals)]
 [JsonSerializable(typeof(AppSettings))]
 [JsonSerializable(typeof(DrawnSignature))]
 partial class SettingsJson : JsonSerializerContext;
