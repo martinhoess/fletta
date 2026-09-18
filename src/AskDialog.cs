@@ -12,7 +12,13 @@ namespace Fletta;
 static class AskDialog
 {
     /// <returns>Index des gewählten Knopfs.</returns>
-    public static int Show(Window owner, string text, params string[] buttons)
+    public static int Show(Window owner, string text, params string[] buttons) => Show(owner, text, null, buttons);
+
+    /// <summary>
+    /// Mit Eingabefeld (etwa ein PasswordBox) zwischen Text und Knöpfen; es hat den Fokus, Enter nimmt dann den
+    /// ersten Knopf (IsDefault), Esc den letzten.
+    /// </summary>
+    public static int Show(Window owner, string text, UIElement? input, params string[] buttons)
     {
         var choice = buttons.Length - 1;
         var row = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right, Margin = new Thickness(0, 20, 0, 0) };
@@ -32,9 +38,12 @@ static class AskDialog
             Content = new StackPanel
             {
                 Margin = new Thickness(22, 18, 18, 16),
-                Children = { new TextBlock { Text = text, TextWrapping = TextWrapping.Wrap, MaxWidth = 380 }, row },
+                Children = { new TextBlock { Text = text, TextWrapping = TextWrapping.Wrap, MaxWidth = 380, Margin = new Thickness(0, 0, 0, input is null ? 0 : 12) } },
             },
         };
+        var body = (StackPanel)dialog.Content;
+        if (input is not null) body.Children.Add(input);
+        body.Children.Add(row);
         dialog.SourceInitialized += (_, _) => MainWindow.ApplyDarkCaption(dialog);
         dialog.PreviewKeyDown += (_, e) =>
         {
@@ -68,7 +77,7 @@ static class AskDialog
             };
             row.Children.Add(button);
         }
-        dialog.Loaded += (_, _) => row.Children[0].Focus();
+        dialog.Loaded += (_, _) => (input ?? row.Children[0]).Focus();
         dialog.ShowDialog();
         return choice;
     }

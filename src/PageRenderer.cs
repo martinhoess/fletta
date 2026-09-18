@@ -29,6 +29,7 @@ public sealed class PageRenderer : IDisposable
     readonly TaskCompletionSource<IReadOnlyList<Size>> opened = new(TaskCreationOptions.RunContinuationsAsynchronously);
     readonly TaskCompletionSource closed = new(TaskCreationOptions.RunContinuationsAsynchronously);
     readonly Queue<Job> jobs = new();
+    readonly Queue<Job> idleJobs = new(); // erst, wenn weder Aufgaben noch Bildaufträge warten (Text für die Suche)
     // Aufträge, die gerade gerendert oder schon fertig, aber noch nicht zugestellt sind: die filtert
     // Request heraus, sonst stellte das Fenster sie in dieser Lücke erneut an (Seite doppelt gerendert).
     readonly HashSet<RenderRequest> inFlight = [];
@@ -39,11 +40,11 @@ public sealed class PageRenderer : IDisposable
     /// <summary>Eine Aufgabe auf dem Render-Thread (Drucken, Text); Cancel, wenn sie nie drankommt.</summary>
     sealed record Job(Action<PdfDocument> Run, Action Cancel);
 
-    public PageRenderer(string path, Dispatcher ui, Action<RenderResult> deliver)
+    public PageRenderer(string path, Dispatcher ui, Action<RenderResult> deliver, string? password = null)
     {
         this.ui = ui;
         this.deliver = deliver;
-        var thread = new Thread(() => Run(path)) { IsBackground = true, Name = "PDFium" };
+        var thread = new Thread(() => Run(path, password)) { IsBackground = true, Name = "PDFium" };
         thread.SetApartmentState(ApartmentState.STA); // die WriteableBitmaps entstehen auf diesem Thread
         thread.Start();
     }
@@ -57,8 +58,9 @@ public sealed class PageRenderer : IDisposable
     /// <summary>
     /// Führt work auf dem Render-Thread aus, vor den wartenden Bildaufträgen — für alles, was PDFium
     /// braucht (Drucken, Seitentext). Ausnahmen landen im Task; endet der Thread vorher, wird er abgebrochen.
+    /// whenIdle: erst, wenn sonst nichts mehr wartet — Arbeit im Hintergrund, die Blättern nicht aufhalten soll.
     /// </summary>
-    public Task<T> Invoke<T>(Func<PdfDocument, T> work)
+    public Task<T> Invoke<T>(Func<PdfDocument, T> work, bool whenIdle = false)
     {
         var done = new TaskCompletionSource<T>(TaskCreationOptions.RunContinuationsAsynchronously);
         var job = new Job(document =>
@@ -71,7 +73,7 @@ public sealed class PageRenderer : IDisposable
             if (stopped || finished) job.Cancel();
             else
             {
-                jobs.Enqueue(job);
+                (whenIdle ? idleJobs : jobs).Enqueue(job);
                 Monitor.Pulse(gate);
             }
         }
@@ -107,26 +109,27 @@ public sealed class PageRenderer : IDisposable
         }
     }
 
-    void Run(string path)
+    void Run(string path, string? password)
     {
-        try { RenderUntilStopped(path); }
+        try { RenderUntilStopped(path, password); }
         finally
         {
             lock (gate)
             {
                 finished = true;
                 while (jobs.TryDequeue(out var job)) job.Cancel();
+                while (idleJobs.TryDequeue(out var job)) job.Cancel();
             }
             closed.SetResult();
         }
     }
 
-    void RenderUntilStopped(string path)
+    void RenderUntilStopped(string path, string? password)
     {
         PdfDocument document;
         try
         {
-            document = PdfDocument.Open(path);
+            document = PdfDocument.Open(path, password);
             opened.SetResult(SizesOf(document));
         }
         catch (PdfException e)
@@ -170,18 +173,19 @@ public sealed class PageRenderer : IDisposable
 
     bool Idle()
     {
-        lock (gate) return queue.Length == 0 && jobs.Count == 0;
+        lock (gate) return queue.Length == 0 && jobs.Count == 0 && idleJobs.Count == 0;
     }
 
-    /// <summary>Nächste Aufgabe (zuerst) oder nächster Bildauftrag; false, sobald gestoppt.</summary>
+    /// <summary>Nächste Aufgabe (zuerst), nächster Bildauftrag, dann Hintergrundarbeit; false, sobald gestoppt.</summary>
     bool TryTake(out RenderRequest job, out Job? task)
     {
         lock (gate)
         {
-            while (!stopped && queue.Length == 0 && jobs.Count == 0) Monitor.Wait(gate);
+            while (!stopped && queue.Length == 0 && jobs.Count == 0 && idleJobs.Count == 0) Monitor.Wait(gate);
             (job, task) = (default, null);
             if (stopped) return false;
             if (jobs.TryDequeue(out task)) return true;
+            if (queue.Length == 0) return idleJobs.TryDequeue(out task);
             job = queue[0];
             queue = queue[1..];
             inFlight.Add(job);

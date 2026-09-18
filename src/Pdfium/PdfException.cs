@@ -16,7 +16,7 @@ public sealed class PdfException(uint code) : Exception(Describe(code))
     {
         FileError => "Die Datei wurde nicht gefunden oder lässt sich nicht lesen.",
         FormatError => "Das ist keine PDF-Datei, oder sie ist beschädigt.",
-        PasswordError => "Die Datei ist passwortgeschützt. Die Passworteingabe kommt noch.",
+        PasswordError => "Die Datei ist passwortgeschützt, oder das Passwort stimmt nicht.",
         SecurityError => "Die Datei nutzt eine Verschlüsselung, die PDFium nicht kennt.",
         PageError => "Die Seite fehlt oder ihr Inhalt ist fehlerhaft.",
         EditError => "PDFium konnte die Änderung nicht ausführen oder die Datei nicht schreiben.",

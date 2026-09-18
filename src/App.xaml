@@ -35,6 +35,9 @@
     <Geometry x:Key="IconClose">M6 6l12 12M18 6L6 18</Geometry>
     <Geometry x:Key="IconPrev">M15 5l-7 7 7 7</Geometry>
     <Geometry x:Key="IconNext">M9 5l7 7-7 7</Geometry>
+    <Geometry x:Key="IconSearch">M10.5 4a6.5 6.5 0 1 0 0 13a6.5 6.5 0 1 0 0-13zM15.2 15.2L20 20</Geometry>
+    <Geometry x:Key="IconUp">M6 15l6-6 6 6</Geometry>
+    <Geometry x:Key="IconDown">M6 9l6 6 6-6</Geometry>
     <Geometry x:Key="IconSave">M5 3h11l5 5v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2zM7 3v5h8V3M7 21v-7h10v7</Geometry>
 
     <!-- Symbolknopf: Content ist eine der Geometrien oben. Nicht fokussierbar, damit die Tasten
@@ -238,6 +241,12 @@
       <Setter Property="BorderThickness" Value="0" />
       <Setter Property="HorizontalContentAlignment" Value="Center" />
       <Setter Property="VerticalContentAlignment" Value="Center" />
+    </Style>
+
+    <Style x:Key="SearchBox" TargetType="TextBox" BasedOn="{StaticResource PageBox}">
+      <Setter Property="Width" Value="220" />
+      <Setter Property="Padding" Value="6,0" />
+      <Setter Property="HorizontalContentAlignment" Value="Left" />
     </Style>
   </Application.Resources>
 </Application>

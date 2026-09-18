@@ -1,6 +1,7 @@
 using System.IO;
 using System.IO.Compression;
 using System.Drawing.Printing;
+using System.Security.Cryptography;
 using System.Text;
 using System.Text.RegularExpressions;
 using System.Windows;
@@ -43,6 +44,7 @@ static class SelfTest
                 failures += Check("rechts gedreht: oben links weiß", RgbAt(right, 11, 11) == 0xFFFFFF);
                 failures += Check("Seitentext", doc.PageText(0).Contains("Fletta Test"));
                 failures += Check("Gliederung: ein Lesezeichen auf Seite 2", doc.Outline().SequenceEqual([new OutlineEntry("Kapitel Zwei", 1, 0)]));
+                failures += SearchAndLinkChecks(doc);
             }
 
             failures += Check("fehlende Datei", OpenError(Path.Combine(dir.FullName, "fehlt.pdf")) == PdfException.FileError);
@@ -51,6 +53,7 @@ static class SelfTest
             failures += Check("kaputte Datei", OpenError(junk) == PdfException.FormatError);
 
             failures += LayoutChecks();
+            failures += PasswordChecks(dir.FullName);
             failures += EditChecks(good, dir.FullName);
             failures += RendererChecks(good, junk, dir.FullName);
         }
@@ -195,6 +198,18 @@ static class SelfTest
         failures += Check("Druck: markierte Seiten als Läufe",
             PrintJob.RunsOf([0, 1, 2, 5]).SequenceEqual([(1, 3), (6, 6)]) && PrintJob.RunsOf([]).Length == 0);
 
+        // Drehung der Ansicht auf Anteile der Seite: oben links landet nach R oben rechts, L dreht zurück.
+        failures += Check("Drehen: oben links wird oben rechts", PageLayout.Turn(new Point(0, 0), 1) == new Point(1, 0));
+        var inside = new Point(0.2, 0.3);
+        failures += Check("Drehen: zurück ergibt die Stelle", Near(PageLayout.Turn(PageLayout.Turn(inside, 1), -1), inside) && Near(PageLayout.Turn(inside, 4), inside));
+        var turnedRect = PageLayout.Turn(new Rect(0.1, 0.2, 0.3, 0.1), 1);
+        failures += Check("Drehen: Rechteck tauscht die Kanten",
+            Math.Abs(turnedRect.X - 0.7) < 1e-9 && Math.Abs(turnedRect.Y - 0.1) < 1e-9 && Math.Abs(turnedRect.Width - 0.1) < 1e-9 && Math.Abs(turnedRect.Height - 0.3) < 1e-9);
+        // Suche im gemerkten Text: ohne Groß/klein, nicht überlappend, Umlaute gleich behandelt.
+        failures += Check("Suche: Groß/klein egal, auch Umlaute", MainWindow.FindAll("Öl ÖL öl", "öl").SequenceEqual([(0, 2), (3, 2), (6, 2)]));
+        failures += Check("Suche: Treffer überlappen nicht", MainWindow.FindAll("aaaa", "aa").SequenceEqual([(0, 2), (2, 2)]));
+        failures += Check("Suche: leerer Begriff findet nichts", MainWindow.FindAll("abc", "").Length == 0 && MainWindow.FindAll("", "a").Length == 0);
+
         failures += Check("Zoom hoch von 100", PageLayout.NextZoom(100, +1) == 110);
         failures += Check("Zoom runter von 100", PageLayout.NextZoom(100, -1) == 90);
         failures += Check("Zoom zwischen zwei Stufen", PageLayout.NextZoom(118.3, +1) == 125 && PageLayout.NextZoom(118.3, -1) == 110);
@@ -231,6 +246,16 @@ static class SelfTest
             var text = renderer.Invoke(document => document.PageText(0));
             failures += Check("Aufgabe auf dem Render-Thread (Seitentext)",
                 text.Wait(TimeSpan.FromSeconds(5)) && text.Result.Contains("Fletta Test"));
+
+            // Hintergrundarbeit (Text für die Suche) läuft erst nach allem anderen, auch wenn sie früher kam.
+            var order = new List<string>();
+            using var hold = new ManualResetEventSlim();
+            var blocker = renderer.Invoke(_ => hold.Wait(TimeSpan.FromSeconds(5)));
+            var idle = renderer.Invoke(_ => { lock (order) order.Add("Hintergrund"); return 0; }, whenIdle: true);
+            var urgent = renderer.Invoke(_ => { lock (order) order.Add("Aufgabe"); return 0; });
+            hold.Set();
+            failures += Check("Hintergrundarbeit nach der Aufgabe",
+                Task.WaitAll([blocker, idle, urgent], TimeSpan.FromSeconds(5)) && order.SequenceEqual(["Aufgabe", "Hintergrund"]));
             failures += PrintCheck(renderer, dir);
         }
         failures += Check("Render-Thread stellt das Bild zu", result?.Bitmap is { } bitmap && RgbAt(bitmap, 60, 84) == 0x0000FF);
@@ -283,6 +308,121 @@ static class SelfTest
     {
         try { task.Wait(TimeSpan.FromSeconds(5)); return 0; }
         catch (AggregateException e) when (e.InnerException is PdfException pdf) { return pdf.Code; }
+    }
+
+    static bool Near(Point a, Point b) => Math.Abs(a.X - b.X) < 1e-9 && Math.Abs(a.Y - b.Y) < 1e-9;
+
+    /// <summary>
+    /// Lage von Suchtreffern und Links in Anteilen der Seite, auf Seite 2 (/Rotate 90 im PDF) mitgedreht. „Fletta Test“
+    /// steht bei x = 110, Grundlinie y = 780 (von unten), 18 pt; die Links auf Seite 1 siehe MinimalPdf.
+    /// </summary>
+    static int SearchAndLinkChecks(PdfDocument doc)
+    {
+        var failures = 0;
+        var at = MainWindow.FindAll(doc.PageText(0), "fletta test");
+        var upright = at.Length == 1 ? doc.TextRects(0, at)[0] : Array.Empty<Rect>();
+        failures += Check("Suche: Treffer oben links auf Seite 1", upright.Length > 0
+            && upright[0].Left is > 0.17 and < 0.2 && upright[0].Top is > 0.02 and < 0.08 && upright[0].Bottom is > 0.05 and < 0.1);
+        var turnedAt = MainWindow.FindAll(doc.PageText(1), "fletta test");
+        var turned = turnedAt.Length == 1 ? doc.TextRects(1, turnedAt)[0] : Array.Empty<Rect>();
+        failures += Check("Suche: auf der gedrehten Seite 2 oben rechts", turned.Length > 0 && turned[0].Left > 0.88 && turned[0].Top is > 0.17 and < 0.2);
+
+        var links = doc.Links(0);
+        failures += Check("Link mit Adresse samt Lage", links.Any(link => link.Uri == "https://example.com/fletta" && link.Page == -1
+            && Math.Abs(link.Area.Left - 100 / 595.0) < 0.005 && Math.Abs(link.Area.Top - (842 - 150) / 842.0) < 0.005
+            && Math.Abs(link.Area.Width - 100 / 595.0) < 0.005));
+        failures += Check("Link auf Seite 2", links.Any(link => link.Page == 1 && Math.Abs(link.Area.Left - 300 / 595.0) < 0.005));
+        failures += Check("Adresse im Text als Link", links.Any(link => link.Page == -1 && link.Uri?.Contains("fletta.example/hilfe") == true));
+        failures += Check("Seite ohne Link-Annotationen: nur die Adresse aus dem Text", doc.Links(1).All(link => link.Uri?.Contains("fletta.example") == true));
+        return failures;
+    }
+
+    /// <summary>
+    /// Passwortgeschützte PDF (RC4, 40 Bit, Revision 2): Öffnen ohne und mit falschem Passwort scheitert mit PasswordError,
+    /// mit richtigem geht es — das Passwort hat ein Umlaut, Fletta übergibt es als UTF-8, verschlüsselt ist mit Latin-1.
+    /// Speichern behält den Schutz (sonst läge die Datei nach Strg+S offen da).
+    /// </summary>
+    static int PasswordChecks(string dir)
+    {
+        const string secret = "geheim-ä";
+        var failures = 0;
+        var locked = Path.Combine(dir, "geschützt.pdf");
+        File.WriteAllBytes(locked, EncryptedPdf(secret));
+        failures += Check("Passwort: ohne abgelehnt", PasswordOpenError(locked, null) == PdfException.PasswordError);
+        failures += Check("Passwort: falsches abgelehnt", PasswordOpenError(locked, "falsch") == PdfException.PasswordError);
+        using (var doc = PdfDocument.Open(locked, secret))
+        {
+            failures += Check("Passwort: richtiges öffnet, Text lesbar", doc.PageText(0).Contains("Geheim Test"));
+            var saved = Path.Combine(dir, "geschützt gespeichert.pdf");
+            doc.Rotate(0, 1);
+            doc.SaveAs(saved);
+            failures += Check("Passwort: Speichern behält den Schutz", PasswordOpenError(saved, null) == PdfException.PasswordError);
+            using var reopened = PdfDocument.Open(saved, secret);
+            failures += Check("Passwort: gespeicherte Datei mit Passwort lesbar und gedreht",
+                reopened.PageText(0).Contains("Geheim Test") && reopened.PageSize(0) == new Size(842, 595));
+        }
+        var renderer = new PageRenderer(locked, Dispatcher.CurrentDispatcher, _ => { }, secret);
+        using (renderer)
+            failures += Check("Passwort: Render-Thread öffnet mit Passwort", renderer.Opened.Wait(TimeSpan.FromSeconds(5)) && renderer.Opened.Result.Count == 1);
+        renderer.Closed.Wait(TimeSpan.FromSeconds(5));
+        return failures;
+    }
+
+    static uint PasswordOpenError(string path, string? password)
+    {
+        try { PdfDocument.Open(path, password).Dispose(); return 0; }
+        catch (PdfException e) { return e.Code; }
+    }
+
+    /// <summary>
+    /// Eine Seite A4 mit „Geheim Test“, verschlüsselt nach dem Standard-Sicherheitsverfahren Revision 2 (PDF 1.7,
+    /// Algorithmen 1–4): 40-Bit-RC4, Schlüssel aus MD5 über Passwort, O-Wert, Rechte und Datei-ID; jeder Stream mit
+    /// eigenem Schlüssel aus Objektnummer und Generation. Eigentümer- gleich Benutzerpasswort.
+    /// </summary>
+    static byte[] EncryptedPdf(string password)
+    {
+        byte[] padding = [0x28, 0xBF, 0x4E, 0x5E, 0x4E, 0x75, 0x8A, 0x41, 0x64, 0x00, 0x4E, 0x56, 0xFF, 0xFA, 0x01, 0x08,
+                          0x2E, 0x2E, 0x00, 0xB6, 0xD0, 0x68, 0x3E, 0x80, 0x2F, 0x0C, 0xA9, 0xFE, 0x64, 0x53, 0x69, 0x7A];
+        byte[] padded = [.. Encoding.Latin1.GetBytes(password).Concat(padding).Take(32)];
+        byte[] id = [.. Enumerable.Range(1, 16).Select(i => (byte)i)];
+        const int permissions = -4; // alles erlaubt
+        var owner = Rc4(MD5.HashData(padded)[..5], padded);
+        var key = MD5.HashData([.. padded, .. owner, .. BitConverter.GetBytes(permissions), .. id])[..5];
+        var user = Rc4(key, padding);
+        static string Hex(byte[] bytes) => $"<{Convert.ToHexString(bytes)}>";
+
+        const string content = "BT /F1 18 Tf 110 780 Td (Geheim Test) Tj ET";
+        var objectKey = MD5.HashData([.. key, 4, 0, 0, 0, 0])[..10]; // Objekt 4, Generation 0
+        var encrypted = Encoding.Latin1.GetString(Rc4(objectKey, Encoding.ASCII.GetBytes(content)));
+        const string resources = "/Resources << /Font << /F1 << /Type /Font /Subtype /Type1 /BaseFont /Helvetica >> >> >>";
+        string[] objects =
+        [
+            "<< /Type /Catalog /Pages 2 0 R >>",
+            "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+            $"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] {resources} /Contents 4 0 R >>",
+            $"<< /Length {content.Length} >>\nstream\n{encrypted}\nendstream",
+            $"<< /Filter /Standard /V 1 /R 2 /O {Hex(owner)} /U {Hex(user)} /P {permissions} >>",
+        ];
+        return Pdf(objects, $"/Encrypt 5 0 R /ID [{Hex(id)} {Hex(id)}]");
+    }
+
+    static byte[] Rc4(byte[] key, byte[] data)
+    {
+        var state = Enumerable.Range(0, 256).Select(i => (byte)i).ToArray();
+        for (int i = 0, j = 0; i < 256; i++)
+        {
+            j = (j + state[i] + key[i % key.Length]) & 255;
+            (state[i], state[j]) = (state[j], state[i]);
+        }
+        var result = new byte[data.Length];
+        for (int n = 0, i = 0, j = 0; n < data.Length; n++)
+        {
+            i = (i + 1) & 255;
+            j = (j + state[i]) & 255;
+            (state[i], state[j]) = (state[j], state[i]);
+            result[n] = (byte)(data[n] ^ state[(state[i] + state[j]) & 255]);
+        }
+        return result;
     }
 
     static int Check(string name, bool ok)
@@ -410,6 +550,8 @@ static class SelfTest
             using var reopened = PdfDocument.Open(saved);
             var outline = reopened.Outline();
             failures += Check($"Lesezeichen nach Löschen: {name}", outline.Count == 1 && outline[0].Page == expected);
+            // Der Link auf Seite 2 (MinimalPdf) folgt genauso; ist Seite 2 weg, ist er kein Link mehr (Review 2026-09-18).
+            if (deleted == 1) failures += Check("Link auf gelöschte Seite fällt weg", doc.Links(0).All(link => link.Uri is not null) && doc.Links(0).Count > 0);
         }
         failures += Check("Einfügen einer kaputten Datei meldet FormatError", EditError(four, doc => doc.InsertFrom(Path.Combine(dir, "kaputt.pdf"), 0)) == PdfException.FormatError);
         failures += Check("Verschieben außerhalb meldet EditError", EditError(four, doc => doc.MovePages([0], 9)) == PdfException.EditError);
@@ -472,35 +614,43 @@ static class SelfTest
 
     static byte[] MinimalPdf()
     {
-        const string content = "0 0 1 rg 100 100 395 642 re f 1 0 0 rg 20 752 70 70 re f BT 0 g /F1 18 Tf 110 780 Td (Fletta Test) Tj ET";
+        // Unten eine Adresse als reiner Text (PDFium erkennt sie als Link), außerhalb der Pixelproben.
+        const string content = "0 0 1 rg 100 100 395 642 re f 1 0 0 rg 20 752 70 70 re f BT 0 g /F1 18 Tf 110 780 Td (Fletta Test) Tj ET "
+                             + "BT 0 g /F1 10 Tf 300 60 Td (https://fletta.example/hilfe) Tj ET";
         const string resources = "/Resources << /Font << /F1 << /Type /Font /Subtype /Type1 /BaseFont /Helvetica >> >> >>";
         string[] objects =
         [
             "<< /Type /Catalog /Pages 2 0 R /Outlines 6 0 R >>",
             "<< /Type /Pages /Kids [3 0 R 5 0 R] /Count 2 >>",
-            $"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] {resources} /Contents 4 0 R >>",
+            $"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] {resources} /Contents 4 0 R /Annots [8 0 R 9 0 R] >>",
             $"<< /Length {content.Length} >>\nstream\n{content}\nendstream",
             $"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Rotate 90 {resources} /Contents 4 0 R >>",
             "<< /Type /Outlines /First 7 0 R /Last 7 0 R /Count 1 >>",
             "<< /Title (Kapitel Zwei) /Parent 6 0 R /Dest [5 0 R /Fit] >>",
+            // Unsichtbare Links (ohne Rahmen): einer auf eine Adresse, einer auf Seite 2.
+            "<< /Type /Annot /Subtype /Link /Rect [100 100 200 150] /Border [0 0 0] /A << /S /URI /URI (https://example.com/fletta) >> >>",
+            "<< /Type /Annot /Subtype /Link /Rect [300 100 400 150] /Border [0 0 0] /Dest [5 0 R /Fit] >>",
         ];
         return Pdf(objects);
     }
 
-    /// <summary>Objekte 1 … n in dieser Reihenfolge, Objekt 1 ist der Katalog.</summary>
-    static byte[] Pdf(IReadOnlyList<string> objects)
+    /// <summary>
+    /// Objekte 1 … n in dieser Reihenfolge, Objekt 1 ist der Katalog. Latin-1, damit verschlüsselte Streams Byte für
+    /// Byte ankommen; trailerExtra steht zusätzlich im Trailer.
+    /// </summary>
+    static byte[] Pdf(IReadOnlyList<string> objects, string trailerExtra = "")
     {
         var pdf = new StringBuilder("%PDF-1.7\n");
         var offsets = new List<int>();
         for (var i = 0; i < objects.Count; i++)
         {
-            offsets.Add(pdf.Length); // reines ASCII: Zeichen = Bytes
+            offsets.Add(pdf.Length); // Latin-1: Zeichen = Bytes
             pdf.Append($"{i + 1} 0 obj\n{objects[i]}\nendobj\n");
         }
         var xref = pdf.Length;
         pdf.Append($"xref\n0 {objects.Count + 1}\n0000000000 65535 f \n");
         foreach (var offset in offsets) pdf.Append($"{offset:D10} 00000 n \n");
-        pdf.Append($"trailer\n<< /Size {objects.Count + 1} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n");
-        return Encoding.ASCII.GetBytes(pdf.ToString());
+        pdf.Append($"trailer\n<< /Size {objects.Count + 1} /Root 1 0 R {trailerExtra}>>\nstartxref\n{xref}\n%%EOF\n");
+        return Encoding.Latin1.GetBytes(pdf.ToString());
     }
 }
