@@ -41,6 +41,8 @@
         <Rectangle Style="{StaticResource ToolSeparator}" />
         <Button x:Name="CopyButton" Style="{StaticResource ToolButton}" Content="{StaticResource IconCopy}"
                 ToolTip="Seite kopieren: Bild und Text (Strg+C) – nur Text: Strg+Umschalt+C" Click="OnCopyClick" />
+        <Button x:Name="SearchButton" Style="{StaticResource ToolButton}" Content="{StaticResource IconSearch}"
+                ToolTip="Suchen (Strg+F)" Click="OnSearchClick" />
         <Rectangle Style="{StaticResource ToolSeparator}" />
         <Button Style="{StaticResource ToolButton}" Content="{StaticResource IconHelp}" ToolTip="Tastenkürzel (F1 oder ?)" Click="OnHelpClick" />
       </StackPanel>
@@ -174,17 +176,35 @@
         <TextBlock x:Name="NoticeText" Margin="10,4" />
       </Border>
 
-      <!-- Neue Version auf GitHub: bleibt stehen, bis aktualisiert oder weggeklickt wird. -->
-      <Border x:Name="UpdatePill" Style="{StaticResource Pill}" VerticalAlignment="Top" HorizontalAlignment="Right"
-              Margin="0,18,30,0" Visibility="Collapsed">
-        <StackPanel Orientation="Horizontal">
-          <TextBlock x:Name="UpdateText" Margin="12,0,6,0" VerticalAlignment="Center" />
-          <Button x:Name="UpdateButton" Style="{StaticResource TextButton}" Foreground="{StaticResource AccentBrush}"
-                  Content="Aktualisieren" Click="OnUpdateClick" />
-          <Button x:Name="UpdateCloseButton" Style="{StaticResource ToolButton}" Content="{StaticResource IconClose}"
-                  ToolTip="Später" Click="OnUpdateCloseClick" />
-        </StackPanel>
-      </Border>
+      <StackPanel VerticalAlignment="Top" HorizontalAlignment="Right" Margin="0,18,30,0">
+        <!-- Suche (Strg+F): Enter und F3 zum nächsten Treffer, mit Umschalt zurück, Esc schließt. -->
+        <Border x:Name="SearchPill" Style="{StaticResource Pill}" VerticalAlignment="Top" HorizontalAlignment="Right"
+                Margin="0,0,0,8" Visibility="Collapsed">
+          <StackPanel Orientation="Horizontal">
+            <TextBox x:Name="SearchBox" Style="{StaticResource SearchBox}" ToolTip="Suchbegriff – Enter: nächster Treffer"
+                     TextChanged="OnSearchTextChanged" />
+            <TextBlock x:Name="SearchStatus" Foreground="{StaticResource MutedBrush}" VerticalAlignment="Center"
+                       MinWidth="72" Margin="10,0,6,0" />
+            <Button Style="{StaticResource ToolButton}" Content="{StaticResource IconUp}" ToolTip="Voriger Treffer (Umschalt+F3)"
+                    Click="OnSearchPrevClick" />
+            <Button Style="{StaticResource ToolButton}" Content="{StaticResource IconDown}" ToolTip="Nächster Treffer (F3)"
+                    Click="OnSearchNextClick" />
+            <Button Style="{StaticResource ToolButton}" Content="{StaticResource IconClose}" ToolTip="Suche schließen (Esc)"
+                    Click="OnSearchCloseClick" />
+          </StackPanel>
+        </Border>
+        <!-- Neue Version auf GitHub: bleibt stehen, bis aktualisiert oder weggeklickt wird. -->
+        <Border x:Name="UpdatePill" Style="{StaticResource Pill}" VerticalAlignment="Top" HorizontalAlignment="Right"
+                Visibility="Collapsed">
+          <StackPanel Orientation="Horizontal">
+            <TextBlock x:Name="UpdateText" Margin="12,0,6,0" VerticalAlignment="Center" />
+            <Button x:Name="UpdateButton" Style="{StaticResource TextButton}" Foreground="{StaticResource AccentBrush}"
+                    Content="Aktualisieren" Click="OnUpdateClick" />
+            <Button x:Name="UpdateCloseButton" Style="{StaticResource ToolButton}" Content="{StaticResource IconClose}"
+                    ToolTip="Später" Click="OnUpdateCloseClick" />
+          </StackPanel>
+        </Border>
+      </StackPanel>
       </Grid>
     </Grid>
 

@@ -3,7 +3,8 @@ using System.Runtime.InteropServices;
 namespace Fletta.Pdfium;
 
 /// <summary>
-/// Nur die PDFium-Funktionen, die Fletta braucht. Signaturen aus fpdfview.h von chromium/8044.
+/// Nur die PDFium-Funktionen, die Fletta braucht. Signaturen aus den Headern von chromium/8044 (fpdfview.h und die
+/// jeweils genannten fpdf_*.h).
 /// FPDF_BOOL ist ein int, daher MarshalAs(Bool) mit 4 Byte.
 /// </summary>
 internal static partial class Native
@@ -160,4 +161,79 @@ internal static partial class Native
     /// <summary>Schreibt count UCS-2-Werte plus Terminator; gibt die geschriebene Zahl samt Terminator zurück.</summary>
     [LibraryImport(Dll)]
     internal static unsafe partial int FPDFText_GetText(nint textPage, int startIndex, int count, ushort* result);
+
+    /// <summary>
+    /// Nummer in der Zeichenliste der Seite zu einer Stelle im Text von FPDFText_GetText; die beiden laufen auseinander,
+    /// sobald eine Seite Zeichen ohne UCS-2-Entsprechung hat (die lässt GetText aus). −1 bei Fehler. fpdf_searchex.h.
+    /// </summary>
+    [LibraryImport(Dll)]
+    internal static partial int FPDFText_GetCharIndexFromTextIndex(nint textPage, int textIndex);
+
+    /// <summary>Rechtecke, die count Zeichen ab startIndex belegen (Zeichenliste, nicht Text); −1 bei falschem Start.</summary>
+    [LibraryImport(Dll)]
+    internal static partial int FPDFText_CountRects(nint textPage, int startIndex, int count);
+
+    /// <summary>Rechteck aus dem letzten FPDFText_CountRects, in Seitenkoordinaten (y nach oben).</summary>
+    [LibraryImport(Dll)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static partial bool FPDFText_GetRect(nint textPage, int rectIndex, out double left, out double top, out double right, out double bottom);
+
+    // Links: Annotationen (fpdf_doc.h) und Adressen im Text (fpdf_text.h)
+
+    /// <summary>FS_RECTF.</summary>
+    [StructLayout(LayoutKind.Sequential)]
+    internal struct RectF
+    {
+        public float Left;
+        public float Top;
+        public float Right;
+        public float Bottom;
+    }
+
+    internal const uint ActionUri = 3; // PDFACTION_URI
+
+    /// <summary>Nächste Link-Annotation ab startPos; false am Ende.</summary>
+    [LibraryImport(Dll)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static partial bool FPDFLink_Enumerate(nint page, ref int startPos, out nint link);
+
+    [LibraryImport(Dll)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static partial bool FPDFLink_GetAnnotRect(nint link, out RectF rect);
+
+    [LibraryImport(Dll)]
+    internal static partial nint FPDFLink_GetDest(nint document, nint link);
+
+    [LibraryImport(Dll)]
+    internal static partial nint FPDFLink_GetAction(nint link);
+
+    /// <summary>Bytes samt NUL; buffer bleibt unberührt, wenn er zu klein ist. Meist ASCII, mitunter UTF-8.</summary>
+    [LibraryImport(Dll)]
+    internal static unsafe partial uint FPDFAction_GetURIPath(nint document, nint action, void* buffer, uint bufferLength);
+
+    [LibraryImport(Dll)]
+    internal static partial nint FPDFLink_LoadWebLinks(nint textPage);
+
+    [LibraryImport(Dll)]
+    internal static partial int FPDFLink_CountWebLinks(nint linkPage);
+
+    /// <summary>UTF-16-Einheiten samt Terminator; mit buffer null die nötige Länge.</summary>
+    [LibraryImport(Dll)]
+    internal static unsafe partial int FPDFLink_GetURL(nint linkPage, int linkIndex, ushort* buffer, int bufferLength);
+
+    [LibraryImport(Dll)]
+    internal static partial int FPDFLink_CountRects(nint linkPage, int linkIndex);
+
+    [LibraryImport(Dll)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static partial bool FPDFLink_GetRect(nint linkPage, int linkIndex, int rectIndex, out double left, out double top, out double right, out double bottom);
+
+    [LibraryImport(Dll)]
+    internal static partial void FPDFLink_CloseWebLinks(nint linkPage);
+
+    /// <summary>Seitenkoordinaten auf ein Pixelraster der angezeigten Seite; rechnet Seitenrahmen und /Rotate ein.</summary>
+    [LibraryImport(Dll)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static partial bool FPDF_PageToDevice(nint page, int startX, int startY, int sizeX, int sizeY, int rotate,
+                                                   double pageX, double pageY, out int deviceX, out int deviceY);
 }

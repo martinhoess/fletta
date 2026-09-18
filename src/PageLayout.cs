@@ -173,6 +173,18 @@ public sealed class PageLayout
         }
     }
 
+    /// <summary>
+    /// Stelle in Anteilen der Seite (0–1 von oben links) nach quarterTurns Vierteldrehungen im Uhrzeigersinn, wie
+    /// R sie in der Ansicht macht; negative drehen zurück. Oben links landet nach einer Drehung oben rechts.
+    /// </summary>
+    public static Point Turn(Point at, int quarterTurns)
+    {
+        for (var turn = 0; turn < (quarterTurns % 4 + 4) % 4; turn++) at = new Point(1 - at.Y, at.X);
+        return at;
+    }
+
+    public static Rect Turn(Rect area, int quarterTurns) => new(Turn(area.TopLeft, quarterTurns), Turn(area.BottomRight, quarterTurns));
+
     /// <summary>Gerundete Pixelzahl, mindestens 1 — für Hauptansicht und Miniaturen gleich.</summary>
     public static int ToPixels(double value) => Math.Max(1, (int)Math.Round(value));
 

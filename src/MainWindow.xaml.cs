@@ -49,6 +49,8 @@ public partial class MainWindow : Window
         new("Strg+A", "alle Seiten markieren"),
         new("Strg+C", "Seite als Bild und Text kopieren"),
         new("Strg+Umschalt+C", "nur den Text kopieren"),
+        new("Strg+F", "suchen; Enter oder F3: nächster Treffer, mit Umschalt: voriger"),
+        new("Klick auf einen Link", "springt zur Seite oder öffnet die Adresse im Browser"),
         new("Strg+P", "drucken"),
         new("Strg+O", "öffnen (neues Fenster, wenn schon eines offen ist)"),
         new("F1 oder ?", "diese Übersicht"),
@@ -68,15 +70,25 @@ public partial class MainWindow : Window
             TextWrapping = TextWrapping.Wrap,
             Margin = new Thickness(16),
         };
+        /// <summary>Treffermarken in Anteilen der Seite: 1 × 1 groß, gestreckt auf die Seite — Zoomen zeichnet nichts neu.</summary>
+        public readonly Canvas Marks = new() { Width = 1, Height = 1 };
+        public (int Page, int Version, int Turns) MarkedFor = (-1, -1, -1);
         public readonly Border Frame;
 
-        public PageSlot() => Frame = new Border { Background = Brushes.White, Child = new Grid { Children = { Image, Status } } };
+        public PageSlot()
+        {
+            // Ohne Layout-Rundung: die rundete die Marken im 1-×-1-Raum auf ganze Einheiten, also weg.
+            var marks = new Viewbox { Stretch = Stretch.Fill, Child = Marks, IsHitTestVisible = false, UseLayoutRounding = false };
+            Frame = new Border { Background = Brushes.White, Child = new Grid { Children = { Image, marks, Status } } };
+        }
     }
 
     readonly Dictionary<int, PageSlot> slots = [];
     readonly Stack<PageSlot> spareSlots = [];
     readonly Dictionary<int, RenderResult> rendered = []; // nur erfolgreiche: Bild samt Auftrag, zu dem es gehört
     readonly Dictionary<int, string> pageErrors = [];
+    readonly Dictionary<int, IReadOnlyList<PageLink>> pageLinks = []; // je Seite, gelesen im Hintergrund nach dem ersten Bild
+    int pagesGeneration; // Seitenfolge geändert (ShowPages, Schließen): ältere Antworten zu Links verfallen
     long droppedPixels; // verworfene Seitenbilder seit dem letzten Anstoß des GC, siehe Discard
     bool measurePending;
     bool wasMaximized;     // letzter Zustand vor dem Minimieren, den merkt sich Fletta
@@ -103,9 +115,10 @@ public partial class MainWindow : Window
     string fileName = "";
     int printing;          // laufende Druckdialoge/-aufträge; solange bleibt der Renderer stehen
     Release? update;       // neuere Version auf GitHub, sobald CheckForUpdate eine gefunden hat
-    // Seitenänderungen seit dem Öffnen oder Speichern, je mit der Drehung davor — Strg+Z nimmt die letzte zurück.
-    readonly List<(PageEdit Edit, int[] TurnsBefore)> edits = [];
+    // Seitenänderungen seit dem Öffnen oder Speichern, je mit Drehung und gelesenem Text davor — Strg+Z nimmt die letzte zurück.
+    readonly List<(PageEdit Edit, int[] TurnsBefore, string?[] TextsBefore)> edits = [];
     string documentPath = "";
+    string? password;      // der geöffneten Datei, für jedes Neuladen (Rückgängig, Speichern)
     bool busy;             // Änderung, Rückgängig oder Speichern läuft: keine Aufträge, kein zweiter Eingriff
     bool closeConfirmed;   // Rückfrage zu ungespeicherten Änderungen ist beantwortet
     bool droppedInside;    // der eigene Zug endete in der eigenen Leiste: dort schon verschoben
@@ -141,6 +154,7 @@ public partial class MainWindow : Window
         Thumbs.FilesDropped += InsertFiles;
         Thumbs.CanAcceptDrop = () => renderer is not null && !busy && printing == 0;
         BuildPageMenu();
+        InitSearch();
         SetDocumentControls(false);
         SourceInitialized += (_, _) =>
         {
@@ -253,17 +267,36 @@ public partial class MainWindow : Window
         documentPath = Path.GetFullPath(path);
         fileName = Path.GetFileName(path);
         Title = $"{fileName} – Fletta";
-        ShowLoadingAfterDelay(opening);
-        try
+        password = null;
+        while (true)
         {
-            pagesPt = await opening.Opened;
-        }
-        catch (PdfException e)
-        {
-            CloseDocument();
-            ShowMessage($"„{fileName}“ lässt sich nicht öffnen", e.Message);
-            FinishMeasure();
-            return;
+            ShowLoadingAfterDelay(opening);
+            try
+            {
+                pagesPt = await opening.Opened;
+                break;
+            }
+            catch (PdfException e) when (e.Code == PdfException.PasswordError && renderer == opening && !measurePending)
+            {
+                var entered = await AskPassword(wrongBefore: password is not null);
+                if (renderer != opening) return; // Fenster inzwischen geschlossen
+                if (entered is null)
+                {
+                    CloseDocument();
+                    ShowMessage($"„{fileName}“ ist passwortgeschützt", "Ohne Passwort lässt sie sich nicht öffnen. Zum neuen Versuch mit Strg+O wieder auswählen.");
+                    return;
+                }
+                password = entered;
+                opening = renderer = new PageRenderer(path, Dispatcher, Deliver, password);
+            }
+            catch (PdfException e)
+            {
+                if (renderer != opening) return;
+                CloseDocument();
+                ShowMessage($"„{fileName}“ lässt sich nicht öffnen", e.Message);
+                FinishMeasure();
+                return;
+            }
         }
         if (renderer != opening) return; // Fenster inzwischen geschlossen
         App.Mark("dokument");
@@ -276,12 +309,35 @@ public partial class MainWindow : Window
             return;
         }
         quarterTurns = new int[pagesPt.Count];
+        pageTexts = new string?[pagesPt.Count];
         MessagePanel.Visibility = Visibility.Collapsed;
         SetDocumentControls(true);
         ShowOutlineMessage("Gliederung wird gelesen …");
         Thumbs.Show(pagesPt, quarterTurns, sidebarWidth.Value);
         App.Mark("leiste");
         ApplyZoom();
+    }
+
+    /// <summary>Dunkle Rückfrage mit Passwortfeld; null bei Abbrechen.</summary>
+    async Task<string?> AskPassword(bool wrongBefore)
+    {
+        // Beim Start kommt die Antwort von PDFium womöglich noch im Konstruktor an: erst warten, bis das Fenster steht,
+        // sonst taugt es nicht als Besitzer des Dialogs.
+        await Dispatcher.InvokeAsync(() => { }, DispatcherPriority.ContextIdle);
+        var box = new PasswordBox
+        {
+            Width = 280,
+            Height = 30,
+            Padding = new Thickness(6, 0, 6, 0),
+            VerticalContentAlignment = VerticalAlignment.Center,
+            BorderThickness = new Thickness(0),
+            Background = (Brush)FindResource("RaiseBrush"),
+            Foreground = (Brush)FindResource("TextBrush"),
+            CaretBrush = (Brush)FindResource("TextBrush"),
+            HorizontalAlignment = HorizontalAlignment.Left,
+        };
+        var text = wrongBefore ? "Das Passwort stimmt nicht. Noch einmal:" : $"„{fileName}“ ist passwortgeschützt. Passwort:";
+        return AskDialog.Show(this, text, box, "Öffnen", "Abbrechen") == 0 ? box.Password : null;
     }
 
     async void ShowLoadingAfterDelay(PageRenderer opening)
@@ -299,6 +355,9 @@ public partial class MainWindow : Window
         layout = null;
         pagesPt = [];
         quarterTurns = [];
+        pageTexts = [];
+        pageLinks.Clear();
+        pagesGeneration++;
         titlePage = -1;
         pinnedOffset = null;
         outlineRequested = false;
@@ -310,6 +369,7 @@ public partial class MainWindow : Window
         PageCanvas.Children.Clear();
         Thumbs.Clear();
         ShowOutline([]);
+        CloseSearch(); // erst nach slots.Clear: die Marken rechnen mit quarterTurns je Seite
         SetDocumentControls(false);
     }
 
@@ -357,7 +417,7 @@ public partial class MainWindow : Window
     /// <summary>Knöpfe und Bodenleisten, die nur mit offenem Dokument etwas tun.</summary>
     void SetDocumentControls(bool enabled)
     {
-        foreach (var button in new ButtonBase[] { SidebarButton, PrintButton, CopyButton, RotateLeftButton, RotateRightButton,
+        foreach (var button in new ButtonBase[] { SidebarButton, PrintButton, CopyButton, SearchButton, RotateLeftButton, RotateRightButton,
                                                   FitWidthButton, FitPageButton, SpreadsButton, PagedButton })
             button.IsEnabled = enabled;
         ZoomPill.Visibility = PagePill.Visibility = enabled ? Visibility.Visible : Visibility.Collapsed;
@@ -561,6 +621,7 @@ public partial class MainWindow : Window
         }
         slot.Status.Text = pageErrors.TryGetValue(page, out var error) ? $"Seite {page + 1} lässt sich nicht anzeigen.\n{error}" : "";
         slot.Frame.Visibility = Visibility.Visible;
+        DrawMarks(slot, page);
     }
 
     /// <summary>
@@ -639,6 +700,7 @@ public partial class MainWindow : Window
             return;
         }
         var page = result.Request.Page;
+        if (result.Bitmap is not null) LoadLinks(page);
         var wanted = RequestFor(page);
         // Aus einer älteren Zoomstufe, während die passende Größe schon da ist: sonst überschreibt
         // ein 110-%-Bild das scharfe 100-%-Bild, nachdem man schnell wieder zurückgezoomt hat.
@@ -879,6 +941,7 @@ public partial class MainWindow : Window
     void OnPrintClick(object sender, RoutedEventArgs e) => Print();
     void OnSaveClick(object sender, RoutedEventArgs e) => _ = Save();
     void OnCopyClick(object sender, RoutedEventArgs e) => CopyPage(textOnly: false);
+    void OnSearchClick(object sender, RoutedEventArgs e) => OpenSearch();
     void OnRotateLeftClick(object sender, RoutedEventArgs e) => Rotate(-1);
     void OnRotateRightClick(object sender, RoutedEventArgs e) => Rotate(+1);
     void OnFitWidthClick(object sender, RoutedEventArgs e) => SetZoom(ZoomMode.FitWidth);
@@ -932,13 +995,24 @@ public partial class MainWindow : Window
         }
         var ctrl = Keyboard.Modifiers == ModifierKeys.Control;
         var plain = Keyboard.Modifiers == ModifierKeys.None;
+        var shift = Keyboard.Modifiers == ModifierKeys.Shift;
         var ctrlShift = Keyboard.Modifiers == (ModifierKeys.Control | ModifierKeys.Shift);
+        // Im Suchfeld tippt man: nur Enter, F3, Esc und Strg+F gehören der Suche, alles andere dem Feld.
+        if (SearchBox.IsKeyboardFocused && !(e.Key is Key.Enter or Key.F3 or Key.Escape || (e.Key == Key.F && ctrl)))
+        {
+            base.OnPreviewKeyDown(e);
+            return;
+        }
         switch (e.Key)
         {
+            case Key.Enter when SearchBox.IsKeyboardFocused && (plain || shift): SearchEnter(shift ? -1 : +1); break;
+            case Key.F3 when plain || shift: StepHit(shift ? -1 : +1); break;
+            case Key.F when ctrl: OpenSearch(); break;
             case Key.Escape when dragging: EndDrag(); break;
             case Key.Escape when ZoomMenu.IsOpen: ZoomMenu.IsOpen = false; break;
             case Key.Escape when PageMenu.IsOpen: PageMenu.IsOpen = false; break;
             case Key.Escape when HelpOverlay.IsVisible: ToggleHelp(); break;
+            case Key.Escape when searchOpen: CloseSearch(); break;
             case Key.F1 when plain: ToggleHelp(); break;
             case Key.Escape: if (!Thumbs.ClearSelection()) Close(); break; // erst die Mehrfachauswahl
             case Key.F4 when plain: ToggleSidebar(); break;
@@ -981,7 +1055,7 @@ public partial class MainWindow : Window
     /// <summary>„?“ liegt je nach Tastatur auf verschiedenen Tasten (deutsch: Umschalt+ß) — daher über den Text.</summary>
     protected override void OnPreviewTextInput(TextCompositionEventArgs e)
     {
-        if (e.Text == "?" && !PageBox.IsKeyboardFocused)
+        if (e.Text == "?" && !PageBox.IsKeyboardFocused && !SearchBox.IsKeyboardFocused)
         {
             ToggleHelp();
             e.Handled = true;
@@ -1013,7 +1087,11 @@ public partial class MainWindow : Window
     /// </summary>
     void OnDragMove(object sender, MouseEventArgs e)
     {
-        if (!dragging) return;
+        if (!dragging)
+        {
+            ShowLinkUnder(e);
+            return;
+        }
         var point = e.GetPosition(Scroller);
         var top = dragOffset.Y - (point.Y - dragFrom.Y);
         // Seitenweise bleibt es in der Zeile der aktuellen Seite: sonst zöge die Maus am Blättern vorbei.
@@ -1026,7 +1104,83 @@ public partial class MainWindow : Window
         Scroller.ScrollToHorizontalOffset(dragOffset.X - (point.X - dragFrom.X));
     }
 
-    void OnDragEnd(object sender, MouseButtonEventArgs e) => EndDrag();
+    /// <summary>Losgelassen, ohne gezogen zu haben, und über einem Link: dem Link folgen.</summary>
+    void OnDragEnd(object sender, MouseButtonEventArgs e)
+    {
+        var moved = e.GetPosition(Scroller) - dragFrom;
+        var clicked = dragging && Math.Abs(moved.X) < SystemParameters.MinimumHorizontalDragDistance
+                               && Math.Abs(moved.Y) < SystemParameters.MinimumVerticalDragDistance;
+        EndDrag();
+        if (clicked && LinkAt(e.GetPosition(PageCanvas)) is { } link) FollowLink(link);
+    }
+
+    /// <summary>
+    /// Links einer Seite einmal lesen, im Hintergrund: nicht auf dem Weg zum ersten Bild und nicht bei jedem Zoomschritt
+    /// neu (Review 2026-09-18). Bis dahin ist die Seite ohne Links; ein Fehlschlag zählt als keine Links.
+    /// </summary>
+    async void LoadLinks(int page)
+    {
+        if (renderer is not { } reader || !pageLinks.TryAdd(page, [])) return;
+        var generation = pagesGeneration;
+        try
+        {
+            var links = await reader.Invoke(document => document.Links(page), whenIdle: true);
+            if (reader == renderer && generation == pagesGeneration) pageLinks[page] = links;
+        }
+        catch (Exception e) when (e is PdfException or TaskCanceledException) { }
+    }
+
+    /// <summary>Link an dieser Stelle der Leinwand; die Drehung der Ansicht wird herausgerechnet.</summary>
+    PageLink? LinkAt(Point point)
+    {
+        foreach (var (page, slot) in slots)
+        {
+            var at = new Point((point.X - Canvas.GetLeft(slot.Frame)) / slot.Frame.Width, (point.Y - Canvas.GetTop(slot.Frame)) / slot.Frame.Height);
+            if (at.X < 0 || at.X > 1 || at.Y < 0 || at.Y > 1) continue;
+            if (!pageLinks.TryGetValue(page, out var links)) return null;
+            var unturned = PageLayout.Turn(at, -quarterTurns[page]);
+            return links.FirstOrDefault(link => link.Area.Contains(unturned));
+        }
+        return null;
+    }
+
+    /// <summary>Über einem Link: Hand und Ziel als Tooltip.</summary>
+    void ShowLinkUnder(MouseEventArgs e)
+    {
+        var link = layout is null ? null : LinkAt(e.GetPosition(PageCanvas));
+        PageCanvas.Cursor = link is null ? null : Cursors.Hand;
+        var tip = link is null ? null : link.Page >= 0 ? $"Seite {link.Page + 1}" : link.Uri;
+        if (!Equals(PageCanvas.ToolTip, tip)) PageCanvas.ToolTip = tip;
+    }
+
+    /// <summary>
+    /// Ziel im Dokument: hinspringen. Adresse: nur Web und Mail an das Standardprogramm — ein PDF soll über einen
+    /// Klick keine Programme oder Dateien starten.
+    /// </summary>
+    void FollowLink(PageLink link)
+    {
+        if (link.Page >= 0)
+        {
+            GoTo(link.Page);
+            return;
+        }
+        // „www.example.com“ ohne Schema ist eine Web-Adresse (Review 2026-09-18); geprüft wird erst danach.
+        if ((!Uri.TryCreate(link.Uri, UriKind.Absolute, out var uri) && !Uri.TryCreate($"http://{link.Uri}", UriKind.Absolute, out uri))
+            || uri.Scheme is not ("http" or "https" or "mailto"))
+        {
+            ShowNotice($"Nicht geöffnet – Fletta öffnet nur Web- und Mail-Adressen: {link.Uri}");
+            return;
+        }
+        try
+        {
+            Process.Start(new ProcessStartInfo(uri.AbsoluteUri) { UseShellExecute = true });
+            ShowNotice(uri.Scheme == "mailto" ? $"Neue Mail an {uri.UserInfo}@{uri.Host}" : $"Öffne {uri.Host} im Browser");
+        }
+        catch (Exception e) when (e is Win32Exception or InvalidOperationException)
+        {
+            ShowNotice($"Link lässt sich nicht öffnen: {e.Message}");
+        }
+    }
 
     /// <summary>Fang verloren — Fensterwechsel, fremder Fang; das Ziehen endet dann ebenso.</summary>
     void OnDragLost(object sender, MouseEventArgs e) => EndDrag();
@@ -1308,8 +1462,9 @@ public partial class MainWindow : Window
                 return PageRenderer.SizesOf(document);
             });
             if (renderer != opening) return -1;
-            edits.Add((edit, quarterTurns));
+            edits.Add((edit, quarterTurns, pageTexts));
             quarterTurns = edit.Remap(quarterTurns, sizes.Length, 0);
+            pageTexts = edit.Remap<string?>(pageTexts, sizes.Length, null);
             ShowPages(sizes, focusPage);
             EditsChanged();
             return sizes.Length;
@@ -1319,7 +1474,7 @@ public partial class MainWindow : Window
             if (renderer != opening) return -1;
             ShowNotice($"Änderung nicht möglich: {e.Message}");
             // PDFium kann ein Dokument halb geändert zurücklassen (FPDF_MovePages): neu laden, gesammelte Schritte wieder anwenden.
-            await Reload(quarterTurns, currentPage);
+            await Reload(quarterTurns, pageTexts, currentPage);
             return -1;
         }
         finally
@@ -1349,6 +1504,8 @@ public partial class MainWindow : Window
         spareSlots.Clear();
         rendered.Clear();
         pageErrors.Clear();
+        pageLinks.Clear();
+        pagesGeneration++;
         mainWanted = [];
         PageCanvas.Children.Clear();
         layout = null;
@@ -1359,13 +1516,14 @@ public partial class MainWindow : Window
         ApplyZoom();
         GoTo(currentPage);
         LoadOutline(renderer!);
+        FindAgain(navigate: false); // Seiten haben sich verschoben: Treffer aus dem gemerkten Text neu
     }
 
     /// <summary>
     /// Datei neu öffnen und die gesammelten Änderungen erneut anwenden — für Strg+Z, nach dem Speichern und
-    /// wenn eine Änderung scheiterte. turns gehört zum Stand danach; null heißt ungedreht.
+    /// wenn eine Änderung scheiterte. turns und texts gehören zum Stand danach; null heißt ungedreht bzw. ungelesen.
     /// </summary>
-    async Task<bool> Reload(int[]? turns, int focusPage)
+    async Task<bool> Reload(int[]? turns, string?[]? texts, int focusPage)
     {
         busy = true;
         try
@@ -1375,7 +1533,7 @@ public partial class MainWindow : Window
                 old.Dispose();
                 await old.Closed;
             }
-            var opening = renderer = new PageRenderer(documentPath, Dispatcher, Deliver);
+            var opening = renderer = new PageRenderer(documentPath, Dispatcher, Deliver, password);
             var replay = edits.Select(entry => entry.Edit).ToArray();
             await opening.Opened;
             var sizes = await opening.Invoke(document =>
@@ -1385,6 +1543,7 @@ public partial class MainWindow : Window
             });
             if (renderer != opening) return false;
             quarterTurns = turns is { } kept && kept.Length == sizes.Length ? kept : new int[sizes.Length];
+            pageTexts = texts is { } read && read.Length == sizes.Length ? read : new string?[sizes.Length];
             ShowPages(sizes, focusPage);
             return true;
         }
@@ -1410,10 +1569,10 @@ public partial class MainWindow : Window
             return;
         }
         // ponytail: Drehungen nach der zurückgenommenen Änderung gehen mit verloren; ein eigener Verlauf je Drehung erst, wenn das stört.
-        var (_, turnsBefore) = edits[^1];
+        var (_, turnsBefore, textsBefore) = edits[^1];
         edits.RemoveAt(edits.Count - 1);
         EditsChanged();
-        if (await Reload(turnsBefore, currentPage))
+        if (await Reload(turnsBefore, textsBefore, currentPage))
             ShowNotice(edits.Count == 0 ? "Alle Änderungen zurückgenommen" : "Letzte Änderung zurückgenommen");
     }
 
@@ -1483,7 +1642,7 @@ public partial class MainWindow : Window
         catch (Exception e) when (e is IOException or UnauthorizedAccessException)
         {
             // Original unverändert: Zwischenstand wiederherstellen. Die geschriebene Kopie erst weg, wenn das klappt.
-            if (await Reload(turns, currentPage))
+            if (await Reload(turns, pageTexts, currentPage))
             {
                 TryDelete(temp);
                 ShowNotice($"Speichern fehlgeschlagen: {e.Message}");
@@ -1493,7 +1652,7 @@ public partial class MainWindow : Window
         }
         edits.Clear();
         EditsChanged();
-        var saved = await Reload(null, currentPage);
+        var saved = await Reload(null, pageTexts, currentPage); // gleiche Seiten, nur die Drehung steckt jetzt in der Datei
         if (saved) ShowNotice($"„{fileName}“ gespeichert");
         return saved;
     }

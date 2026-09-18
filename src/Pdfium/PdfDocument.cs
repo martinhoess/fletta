@@ -16,6 +16,7 @@ public sealed class PdfDocument : IDisposable
     const uint White = 0xFFFFFFFF;
     const uint ActionGoTo = 1;          // PDFACTION_GOTO
     const int MaxOutlineEntries = 10_000, MaxOutlineDepth = 32;
+    const int MaxLinks = 2_000; // je Seite; ein kaputtes oder absichtlich aufgeblähtes PDF soll die Maus nicht lähmen
     // PDFium zerlegt den Seiteninhalt erst beim ersten Rendern und behält ihn am offenen FPDF_PAGE: am
     // Suzuki-Handbuch 158 ms fürs erste, 32 ms fürs zweite Rendern derselben geladenen Seite, das Laden selbst
     // 1,5 ms (windows-pc, 2026-09-13). Jede offene Seite belegt dort aber rund 5 MB (Test-VM: 16 offene +74 MB,
@@ -46,10 +47,13 @@ public sealed class PdfDocument : IDisposable
     /// <summary>Digitale Signaturen im Dokument; Speichern macht sie ungültig.</summary>
     public int SignatureCount => Math.Max(0, Native.FPDF_GetSignatureCount(handle));
 
-    /// <summary>Liest nur Querverweistabelle und Seitenbaum, keine Seiteninhalte.</summary>
-    public static PdfDocument Open(string path)
+    /// <summary>
+    /// Liest nur Querverweistabelle und Seitenbaum, keine Seiteninhalte. Ohne oder mit falschem Passwort bei
+    /// einer geschützten Datei PdfException mit PasswordError.
+    /// </summary>
+    public static PdfDocument Open(string path, string? password = null)
     {
-        var handle = Native.FPDF_LoadDocument(path, null);
+        var handle = Native.FPDF_LoadDocument(path, password);
         return handle == 0 ? throw new PdfException(Native.FPDF_GetLastError()) : new PdfDocument(handle);
     }
 
@@ -109,6 +113,109 @@ public sealed class PdfDocument : IDisposable
         {
             if (text != 0) Native.FPDFText_ClosePage(text);
         }
+    }
+
+    /// <summary>
+    /// Wo die Zeichen [Start, Start + Length) auf der Seite stehen, je Bereich als Rechtecke in Anteilen der Seite
+    /// (siehe ToFraction). Die Nummern sind Stellen im Text von PageText; PDFium zählt für die Lage in seiner Zeichenliste,
+    /// daher umgerechnet (Review 2026-09-18).
+    /// </summary>
+    public Rect[][] TextRects(int index, IReadOnlyList<(int Start, int Length)> ranges)
+    {
+        var page = LoadPage(index);
+        var text = Native.FPDFText_LoadPage(page);
+        if (text == 0) return [.. ranges.Select(_ => Array.Empty<Rect>())];
+        try
+        {
+            return [.. ranges.Select(range =>
+            {
+                var first = Native.FPDFText_GetCharIndexFromTextIndex(text, range.Start);
+                var last = Native.FPDFText_GetCharIndexFromTextIndex(text, range.Start + range.Length - 1);
+                if (first < 0 || last < first) return [];
+                var rects = new Rect[Math.Max(0, Native.FPDFText_CountRects(text, first, last - first + 1))];
+                for (var i = 0; i < rects.Length; i++)
+                {
+                    Native.FPDFText_GetRect(text, i, out var left, out var top, out var right, out var bottom);
+                    rects[i] = ToFraction(page, left, top, right, bottom);
+                }
+                return rects;
+            })];
+        }
+        finally
+        {
+            Native.FPDFText_ClosePage(text);
+        }
+    }
+
+    /// <summary>
+    /// Links der Seite: Link-Annotationen mit Ziel im Dokument oder Adresse, dazu Adressen, die nur als Text dastehen
+    /// (PDFium erkennt „www.…“, „https://…“ und Mail-Adressen). Ohne erkennbares Ziel fällt ein Link weg.
+    /// </summary>
+    public unsafe IReadOnlyList<PageLink> Links(int index)
+    {
+        var page = LoadPage(index);
+        var links = new List<PageLink>();
+        for (var position = 0; links.Count < MaxLinks && Native.FPDFLink_Enumerate(page, ref position, out var link);)
+        {
+            if (!Native.FPDFLink_GetAnnotRect(link, out var rect)) continue;
+            var area = ToFraction(page, rect.Left, rect.Top, rect.Right, rect.Bottom);
+            var dest = Native.FPDFLink_GetDest(handle, link);
+            var action = Native.FPDFLink_GetAction(link);
+            var type = action == 0 ? 0 : Native.FPDFAction_GetType(action);
+            if (dest == 0 && type == ActionGoTo) dest = Native.FPDFAction_GetDest(handle, action);
+            if (dest != 0)
+            {
+                // Ziel −1: die Seite gibt es nicht mehr (in Fletta gelöscht) — dann ist es kein Link mehr.
+                var target = Native.FPDFDest_GetDestPageIndex(handle, dest);
+                if (target >= 0) links.Add(new PageLink(area, target, null));
+            }
+            else if (type == Native.ActionUri && ActionUri(action) is { Length: > 0 } uri) links.Add(new PageLink(area, -1, uri));
+        }
+
+        var text = Native.FPDFText_LoadPage(page);
+        if (text == 0) return links;
+        var web = Native.FPDFLink_LoadWebLinks(text);
+        try
+        {
+            for (var i = 0; web != 0 && i < Native.FPDFLink_CountWebLinks(web) && links.Count < MaxLinks; i++)
+            {
+                var length = Native.FPDFLink_GetURL(web, i, null, 0);
+                if (length <= 1) continue;
+                var buffer = new ushort[length];
+                fixed (ushort* target = buffer) Native.FPDFLink_GetURL(web, i, target, length);
+                var url = new string(MemoryMarshal.Cast<ushort, char>(buffer.AsSpan(0, length - 1)));
+                for (var r = 0; r < Native.FPDFLink_CountRects(web, i); r++)
+                    if (Native.FPDFLink_GetRect(web, i, r, out var left, out var top, out var right, out var bottom))
+                        links.Add(new PageLink(ToFraction(page, left, top, right, bottom), -1, url));
+            }
+        }
+        finally
+        {
+            if (web != 0) Native.FPDFLink_CloseWebLinks(web);
+            Native.FPDFText_ClosePage(text);
+        }
+        return links;
+    }
+
+    unsafe string ActionUri(nint action)
+    {
+        var length = Native.FPDFAction_GetURIPath(handle, action, null, 0);
+        if (length <= 1) return "";
+        var buffer = new byte[length];
+        fixed (byte* target = buffer) Native.FPDFAction_GetURIPath(handle, action, target, length);
+        return Encoding.UTF8.GetString(buffer, 0, (int)length - 1); // ASCII ist gültiges UTF-8
+    }
+
+    /// <summary>
+    /// Seitenkoordinaten als Anteil der angezeigten Seite, 0–1 von oben links: mit Seitenrahmen und /Rotate des PDFs,
+    /// ohne Flettas eigene Drehung (die rechnet PageGeometry.Turn obendrauf). PDFium rechnet dafür auf ein Raster.
+    /// </summary>
+    static Rect ToFraction(nint page, double left, double top, double right, double bottom)
+    {
+        const int Grid = 1_000_000;
+        Native.FPDF_PageToDevice(page, 0, 0, Grid, Grid, 0, left, top, out var x1, out var y1);
+        Native.FPDF_PageToDevice(page, 0, 0, Grid, Grid, 0, right, bottom, out var x2, out var y2);
+        return new Rect(new Point((double)x1 / Grid, (double)y1 / Grid), new Point((double)x2 / Grid, (double)y2 / Grid));
     }
 
     /// <summary>Druckt eine Seite auf ein Drucker-HDC; Koordinaten in Gerätepixeln, Drehung wie bei Render.</summary>
