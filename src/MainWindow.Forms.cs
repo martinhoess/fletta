@@ -33,6 +33,8 @@ public partial class MainWindow
     bool ClickFieldAt(Point point)
     {
         if (FieldAt(point) is not var (page, field) || !field.Fillable) return false;
+        // Während Speichern, Neuladen oder Druck ließe sich die Eingabe nicht übernehmen und ginge verloren (Review 2026-09-18).
+        if (BlockedByWork()) return true;
         switch (field.Type)
         {
             case Native.FormFieldText:
