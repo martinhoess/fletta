@@ -58,6 +58,9 @@ public partial class MainWindow
     void SetTool(Tool next)
     {
         if (gesture is not null) CancelGesture();
+        // Werkzeugknöpfe nehmen den Fokus nicht: ein offenes Formular-Eingabefeld sonst erst beim ersten Zug übernommen,
+        // und dessen neues Bild räumte die Skizze mitten im Zeichnen weg (Review 2026-09-18).
+        if (next != Tool.None) CommitField();
         tool = next;
         HighlightToolButton.IsChecked = next == Tool.Highlight;
         NoteToolButton.IsChecked = next == Tool.Note;
@@ -406,6 +409,7 @@ public partial class MainWindow
 
     async void EditNote(int page, PageAnnotation note)
     {
+        if (BlockedByWork()) return; // erst gar nicht fragen, wenn der Schritt ohnehin abgelehnt würde
         if (AskNote("Notiz bearbeiten:", note.Contents) is { } text && text != note.Contents)
             await Edit(new SetNoteText(page, note.Index, text), page);
     }

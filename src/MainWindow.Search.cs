@@ -8,11 +8,10 @@ using Fletta.Pdfium;
 namespace Fletta;
 
 /// <summary>
-/// Suche (Strg+F). PDFium braucht für den Text einer Seite den zerlegten Seiteninhalt, am Suzuki-Handbuch um 125 ms je
-/// Seite (wiki: Miniaturen beim Durchscrollen) — für 990 Seiten also rund zwei Minuten. Deshalb liest Fletta den Text
-/// jeder Seite einmal im Hintergrund (ab der aktuellen Seite, nur wenn sonst nichts zu rendern ist), merkt ihn sich
-/// und sucht darin selbst; jede weitere Suche ist dann sofort da. Wo ein Treffer auf der Seite steht, fragt Fletta erst,
-/// wenn die Seite zu sehen ist.
+/// Suche (Strg+F). PDFium braucht für den Text einer Seite den zerlegten Seiteninhalt. Fletta liest ihn je Seite einmal im
+/// Hintergrund (ab der aktuellen Seite, nur wenn sonst nichts zu rendern ist), merkt ihn sich und sucht darin selbst; jede
+/// weitere Suche ist dann sofort da. Gemessen: das Suzuki-Handbuch (990 Seiten) ist auf der Test-VM in unter 10 s gelesen
+/// (2026-09-18). Wo ein Treffer auf der Seite steht, fragt Fletta erst, wenn die Seite zu sehen ist.
 /// </summary>
 public partial class MainWindow
 {
@@ -241,20 +240,25 @@ public partial class MainWindow
         foreach (var (page, slot) in slots) DrawMarks(slot, page);
     }
 
-    /// <summary>Marken einer sichtbaren Seite; nur neu, wenn sich Treffer, Seite oder Drehung geändert haben.</summary>
+    /// <summary>
+    /// Marken einer sichtbaren Seite; nur neu, wenn sich Treffer, Seite oder Drehung geändert haben. Fehlt die Lage noch,
+    /// bleibt der Schlüssel offen: LoadHitRects lehnt während einer Änderung ab, und die Seite bliebe sonst ohne Marken.
+    /// </summary>
     void DrawMarks(PageSlot slot, int page)
     {
         var key = (page, searchVersion, quarterTurns[page]);
         if (slot.MarkedFor == key) return;
-        slot.MarkedFor = key;
         slot.Marks.Children.Clear();
         var first = hits.FindIndex(hit => hit.Page == page);
-        if (first < 0) return;
-        if (!hitRects.TryGetValue(page, out var rects))
+        if (first >= 0 && !hitRects.ContainsKey(page))
         {
-            LoadHitRects(page);
+            slot.MarkedFor = (-1, -1, -1);
+            LoadHitRects(page); // hitRectsPending verhindert doppelte Aufträge
             return;
         }
+        slot.MarkedFor = key;
+        if (first < 0) return;
+        var rects = hitRects[page];
         for (var i = 0; i < rects.Length; i++)
             foreach (var rect in rects[i])
             {

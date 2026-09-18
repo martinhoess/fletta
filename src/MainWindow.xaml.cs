@@ -202,6 +202,7 @@ public partial class MainWindow : Window
 
     async void OnUpdateClick(object sender, RoutedEventArgs e)
     {
+        await FlushFieldEditor(); // getippter Text zählt als Änderung; das Setup schlösse das Fenster hart (Review 2026-09-18)
         if (update is null || PrintRunningAnywhere() || UnsavedAnywhere()) return;
         UpdateButton.IsEnabled = UpdateCloseButton.IsEnabled = false;
         UpdateText.Text = $"Fletta {update.Version} wird geladen …";
@@ -912,6 +913,7 @@ public partial class MainWindow : Window
     /// </summary>
     async void CopyPage(bool textOnly)
     {
+        await FlushFieldEditor(); // sonst zeigte das Bild den alten Feldwert
         if (layout is null || renderer is null || busy) return;
         var page = currentPage;
         var turns = quarterTurns[page];
@@ -1674,12 +1676,15 @@ public partial class MainWindow : Window
             }
             var opening = renderer = new PageRenderer(documentPath, Dispatcher, Deliver, password);
             var replay = edits.Select(entry => entry.Edit).ToArray();
-            await opening.Opened;
-            var sizes = await opening.Invoke(document =>
+            // Sofort anstellen, vor dem Warten aufs Öffnen: Aufgaben laufen vor Hintergrundarbeit, sonst läse die Suche in
+            // dieser Lücke Text aus der unveränderten Datei (Review 2026-09-18).
+            var replayed = opening.Invoke(document =>
             {
                 foreach (var edit in replay) edit.Apply(document);
                 return PageRenderer.SizesOf(document);
             });
+            await opening.Opened;
+            var sizes = await replayed;
             if (renderer != opening) return false;
             quarterTurns = turns is { } kept && kept.Length == sizes.Length ? kept : new int[sizes.Length];
             pageTexts = texts is { } read && read.Length == sizes.Length ? read : new string?[sizes.Length];
