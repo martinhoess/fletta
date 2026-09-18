@@ -1,8 +1,9 @@
 # Fletta
 
 *fletta* ist isländisch für „blättern“. Schneller PDF-Betrachter für Windows. Ein Fenster pro PDF, Miniaturen, Zoom, Drehen mit
-`R`/`L`, Drucken, Seite kopieren — und Seiten bearbeiten: löschen, umsortieren, einfügen, in eine neue PDF
-kopieren oder verschieben. Geändert wird die Datei erst mit `Strg+S`.
+`R`/`L`, Suche, Links, passwortgeschützte PDFs, Drucken, Seite kopieren — und bearbeiten: Seiten löschen, umsortieren,
+einfügen, in eine neue PDF kopieren oder verschieben; Anmerkungen (Textmarker, Notiz, Freihand, Text), Unterschrift
+(gezeichnet oder aus Bild) und Formulare ausfüllen. Geändert wird die Datei erst mit `Strg+S`.
 
 <img height="500" alt="image" src="https://github.com/user-attachments/assets/c97593a5-b6a1-4453-9a34-cfe2773217ac" />
 
@@ -44,6 +45,11 @@ Fletta.exe --measure datei   öffnet, rendert, schreibt die Zeitmarken auf stder
 | Miniaturen ziehen | umsortieren; hinaus in den Explorer oder ein anderes Fenster kopiert sie als neue PDF, mit Umschalt verschoben |
 | PDF auf die Miniaturen ziehen | ihre Seiten an dieser Stelle einfügen |
 | Entf | markierte Miniaturen löschen, sonst die aktuelle Seite |
+| Strg+F, dann Enter oder F3 | suchen; nächster Treffer, mit Umschalt voriger; Esc schließt die Suche |
+| Klick auf einen Link | zur Zielseite springen oder Web-/Mail-Adresse im Standardprogramm öffnen |
+| Werkzeuge oben: Textmarker, Notiz, Freihand, Text, Unterschrift | Text überstreichen, an eine Stelle klicken oder mit gedrückter Maustaste zeichnen; Esc beendet das Werkzeug |
+| Rechtsklick auf eine Anmerkung | Notiz bearbeiten oder Anmerkung löschen |
+| Klick in ein Formularfeld | ausfüllen: Enter übernimmt, Tab springt zum nächsten Feld, Esc verwirft; Kästchen und Listen per Klick |
 | Strg+Z | letzte Änderung zurücknehmen |
 | Strg+S | Änderungen und Drehungen speichern; die Datei wird vollständig neu geschrieben |
 | F4 oder Knopf oben links | Seitenleiste mit Miniaturen und Gliederung ein/aus (Rand ziehen ändert die Breite) |
@@ -61,7 +67,7 @@ Fletta.exe --measure datei   öffnet, rendert, schreibt die Zeitmarken auf stder
 | Strg+P | drucken (Windows-Druckdialog mit Vorschau: alle Seiten oder Bereiche, markierte Miniaturen vorbelegt) |
 | Strg+C | aktuelle Seite als Bild (200 dpi) und Text in die Zwischenablage |
 | Strg+Umschalt+C | nur den Text der aktuellen Seite |
-| Esc | Mehrfachauswahl aufheben, sonst Fenster schließen |
+| Esc | Menü, Suche, Werkzeug oder Mehrfachauswahl schließen, sonst Fenster schließen |
 
 Änderungen sammelt Fletta, bis gespeichert wird; der Fenstertitel zeigt dann „●“, oben rechts steht ein
 Speichern-Knopf, und beim Schließen
