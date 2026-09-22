@@ -47,7 +47,9 @@ public partial class MainWindow : Window
         new("S", "seitenweise blättern ein/aus"),
         new("F4", "Seitenleiste ein/aus"),
         new("Strg+A", "alle Seiten markieren"),
-        new("Strg+C", "Seite als Bild und Text kopieren"),
+        new("Ziehen über Text", "Text markieren (Zeiger wird zum I-Balken); daneben schiebt Ziehen die Ansicht"),
+        new("Ziehen mit der mittleren Taste", "Ansicht schieben, auch über Text"),
+        new("Strg+C", "markierten Text kopieren, ohne Auswahl die Seite als Bild und Text"),
         new("Strg+Umschalt+C", "nur den Text kopieren"),
         new("Strg+F", "suchen; Enter oder F3: nächster Treffer, mit Umschalt: voriger"),
         new("Klick auf einen Link", "springt zur Seite oder öffnet die Adresse im Browser"),
@@ -127,6 +129,10 @@ public partial class MainWindow : Window
     // Seitenänderungen seit dem Öffnen oder Speichern, je mit Drehung und gelesenem Text davor — Strg+Z nimmt die letzte zurück.
     readonly List<(PageEdit Edit, int[] TurnsBefore, string?[] TextsBefore)> edits = [];
     string documentPath = "";
+    FileSystemWatcher? fileWatcher;               // horcht auf Änderungen an der offenen Datei, siehe WatchFile
+    (DateTime Written, long Length) fileStamp;    // Stand der Datei, den dieses Fenster zeigt
+    (DateTime Written, long Length) fileGrowing;  // zuletzt gesehener Stand, solange noch geschrieben wird
+    readonly DispatcherTimer fileSettle = new() { Interval = TimeSpan.FromSeconds(1) };
     string? password;      // der geöffneten Datei, für jedes Neuladen (Rückgängig, Speichern)
     bool busy;             // Änderung, Rückgängig oder Speichern läuft: keine Aufträge, kein zweiter Eingriff
     bool closeConfirmed;   // Rückfrage zu ungespeicherten Änderungen ist beantwortet
@@ -150,6 +156,11 @@ public partial class MainWindow : Window
         {
             noticeTimer.Stop();
             NoticePill.Visibility = Visibility.Collapsed;
+        };
+        fileSettle.Tick += (_, _) =>
+        {
+            fileSettle.Stop();
+            NoticeFileChanged();
         };
         Thumbs.PageClicked += GoTo;
         Thumbs.WantedChanged += RequestRenders;
@@ -190,6 +201,122 @@ public partial class MainWindow : Window
             FinishMeasure();
         }
         if (!measure) CheckForUpdate();
+    }
+
+    /// <summary>
+    /// Auf Änderungen der offenen Datei von außen horchen (neu exportiert, neu gescannt, aus der Cloud synchronisiert).
+    /// Neu geladen wird nie von selbst — das nähme dem Leser Lesestelle und eigene Änderungen weg; stattdessen steht
+    /// oben rechts ein Hinweis mit „Neu laden“. Eigene Speichervorgänge fallen über den Zeitstempel heraus.
+    /// </summary>
+    void WatchFile()
+    {
+        StopWatching();
+        fileStamp = fileGrowing = StampOf(documentPath);
+        try
+        {
+            fileWatcher = new FileSystemWatcher(Path.GetDirectoryName(documentPath)!, Path.GetFileName(documentPath))
+            {
+                NotifyFilter = NotifyFilters.LastWrite | NotifyFilters.Size | NotifyFilters.FileName,
+            };
+            fileWatcher.Changed += FileTouched;
+            fileWatcher.Created += FileTouched; // manche Programme schreiben daneben und ersetzen dann
+            fileWatcher.Renamed += FileTouched;
+            fileWatcher.EnableRaisingEvents = true;
+        }
+        catch (Exception e) when (e is ArgumentException or IOException or UnauthorizedAccessException or PlatformNotSupportedException)
+        {
+            // Ordner weg oder eine Ablage ohne Benachrichtigungen: dann eben ohne Hinweis, der Rest läuft weiter.
+            fileWatcher = null;
+        }
+    }
+
+    void StopWatching()
+    {
+        fileSettle.Stop();
+        fileWatcher?.Dispose();
+        fileWatcher = null;
+        ReloadPill.Visibility = Visibility.Collapsed;
+    }
+
+    /// <summary>Zeit und Länge der Datei; beide gleich heißt: derselbe Stand. default, wenn sie gerade nicht lesbar ist.</summary>
+    static (DateTime Written, long Length) StampOf(string path)
+    {
+        try
+        {
+            var info = new FileInfo(path);
+            return info.Exists ? (info.LastWriteTimeUtc, info.Length) : default;
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException or ArgumentException)
+        {
+            return default;
+        }
+    }
+
+    /// <summary>Der Wächter meldet aus seinem eigenen Thread; gearbeitet wird im Fenster, eine Sekunde später.</summary>
+    void FileTouched(object sender, FileSystemEventArgs e) => Dispatcher.InvokeAsync(() =>
+    {
+        fileSettle.Stop();
+        fileSettle.Start();
+    });
+
+    /// <summary>
+    /// Hinweis zeigen, wenn die Datei wirklich anders ist als der gezeigte Stand — und erst, wenn sie fertig
+    /// geschrieben ist: ein Scanner oder Export meldet sich mehrfach und wächst dabei, und ein Neuladen mitten hinein
+    /// fände eine halbe Datei (Review). Wächst sie noch, wird weiter gewartet.
+    /// </summary>
+    void NoticeFileChanged()
+    {
+        if (renderer is null || fileWatcher is null) return;
+        var now = StampOf(documentPath);
+        if (now == fileStamp || now == default) return; // eigener Speichervorgang, Doppelmeldung oder gerade nicht lesbar
+        if (now != fileGrowing)
+        {
+            fileGrowing = now;
+            fileSettle.Start(); // noch in Bewegung: in einer Sekunde noch einmal nachsehen
+            return;
+        }
+        fileStamp = now;
+        ReloadText.Text = $"„{fileName}“ wurde geändert";
+        ReloadPill.Visibility = Visibility.Visible;
+    }
+
+    /// <summary>
+    /// „Neu laden“: der Stand auf der Platte gilt. Eigene ungespeicherte Änderungen gingen dabei verloren — erst fragen.
+    /// Die Lesestelle bleibt, die Drehungen der Ansicht auch, solange die Seitenzahl passt.
+    /// </summary>
+    async void OnReloadClick(object sender, RoutedEventArgs e)
+    {
+        await FlushFieldEditor();
+        if (renderer is null || BlockedByWork()) return;
+        if (!Readable(documentPath))
+        {
+            // Schreibt gerade doch noch jemand, lädt Fletta nicht: ein Fehlschlag ließe das Fenster leer zurück.
+            ShowNotice($"„{fileName}“ ist gerade in Arbeit – gleich noch einmal versuchen");
+            return;
+        }
+        if (HasUnsavedEdits && AskDialog.Show(this, $"„{fileName}“ wurde außerhalb geändert. Neu laden verwirft die eigenen Änderungen.",
+                                              "Neu laden", "Abbrechen") != 0) return;
+        ReloadPill.Visibility = Visibility.Collapsed;
+        fileStamp = StampOf(documentPath);
+        edits.Clear();
+        EditsChanged();
+        if (await Reload((int[])quarterTurns.Clone(), null, currentPage)) ShowNotice($"„{fileName}“ neu geladen");
+    }
+
+    void OnReloadCloseClick(object sender, RoutedEventArgs e) => ReloadPill.Visibility = Visibility.Collapsed;
+
+    /// <summary>Lässt die Datei sich gerade öffnen? Ein anderes Programm, das exklusiv schreibt, sagt hier nein.</summary>
+    static bool Readable(string path)
+    {
+        try
+        {
+            using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+            return stream.Length > 0;
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException or ArgumentException)
+        {
+            return false;
+        }
     }
 
     /// <summary>
@@ -379,6 +506,7 @@ public partial class MainWindow : Window
         if (renderer != opening) return; // Fenster inzwischen geschlossen
         App.Mark("dokument");
         App.RegisterRestart(path);
+        WatchFile();
         NoticeXfa(opening);
         if (pagesPt.Count == 0)
         {
@@ -439,6 +567,7 @@ public partial class MainWindow : Window
 
     void CloseDocument()
     {
+        StopWatching();
         renderer?.Dispose();
         renderer = null;
         edits.Clear();
@@ -453,6 +582,7 @@ public partial class MainWindow : Window
         itemsGeneration++;
         choosing = null;
         charBoxes.Clear();
+        ForgetSelection();
         sketches.Clear(); // hängen an PageCanvas, das gleich geleert wird
         CloseFieldEditor();
         SetTool(Tool.None);
@@ -665,6 +795,7 @@ public partial class MainWindow : Window
             slots[page].Image.Source = null; // sonst hält der Vorrat die Bitmap fest, auch wenn rendered sie vergessen hat
             spareSlots.Push(slots[page]);
             slots.Remove(page);
+            if (selection?.Page != page) charBoxes.Remove(page); // sonst hielte der Vorrat sie für jede je gezeigte Seite
         }
         for (var page = first; page <= last; page++)
         {
@@ -805,6 +936,7 @@ public partial class MainWindow : Window
         if (result.Bitmap is not null)
         {
             LoadPageItems(page);
+            CharBoxesOf(page); // Zeichenkästen der sichtbaren Seite vorab, sonst schiebt der erste Zug über Text, statt zu markieren
             if (result.Request.Revision == pageRevisions[page]) RemoveSketches(page); // die Anmerkung steht jetzt im Bild
         }
         var wanted = RequestFor(page);
@@ -1048,7 +1180,11 @@ public partial class MainWindow : Window
     void OnOpenClick(object sender, RoutedEventArgs e) => PickFile();
     void OnPrintClick(object sender, RoutedEventArgs e) => Print();
     void OnSaveClick(object sender, RoutedEventArgs e) => _ = Save();
-    void OnCopyClick(object sender, RoutedEventArgs e) => CopyPage(textOnly: false);
+    void OnCopyClick(object sender, RoutedEventArgs e)
+    {
+        if (selection is not null) CopySelection();
+        else CopyPage(textOnly: false);
+    }
     void OnSearchClick(object sender, RoutedEventArgs e) => OpenSearch();
     void OnRotateLeftClick(object sender, RoutedEventArgs e) => Rotate(-1);
     void OnRotateRightClick(object sender, RoutedEventArgs e) => Rotate(+1);
@@ -1133,6 +1269,7 @@ public partial class MainWindow : Window
             case Key.Escape when tool != Tool.None: SetTool(Tool.None); break;
             case Key.Escape when HelpOverlay.IsVisible: ToggleHelp(); break;
             case Key.Escape when searchOpen: CloseSearch(); break;
+            case Key.Escape when selection is not null: ClearSelection(); break; // erst die Auswahl, dann erst das Fenster
             case Key.F1 when plain: ToggleHelp(); break;
             case Key.Escape: if (!Thumbs.ClearSelection()) Close(); break; // erst die Mehrfachauswahl
             case Key.F4 when plain: ToggleSidebar(); break;
@@ -1147,6 +1284,7 @@ public partial class MainWindow : Window
             case Key.S when ctrl: _ = Save(); break;
             case Key.Z when ctrl: Undo(); break;
             case Key.Delete when plain: DeletePagesCommand(KeyPages); break;
+            case Key.C when ctrl && selection is not null: CopySelection(); break;
             case Key.C when ctrl: CopyPage(textOnly: false); break;
             case Key.C when ctrlShift: CopyPage(textOnly: true); break;
             case Key.R when plain: Rotate(+1); break;
@@ -1200,11 +1338,16 @@ public partial class MainWindow : Window
             BeginGesture(e); // mit einem Werkzeug zeichnet oder markiert die Maus, statt zu scrollen
             return;
         }
-        if (ClickFieldAt(e.GetPosition(PageCanvas)))
+        var onPage = e.GetPosition(PageCanvas);
+        if (ClickFieldAt(onPage))
         {
             e.Handled = true; // kein Ziehen, und der ScrollViewer nimmt dem Eingabefeld den Fokus nicht
             return;
         }
+        // Auf Text markiert der Zug, daneben schiebt er. Über einem Link nicht: dessen Zeichenkästen decken ihn ab, und
+        // der Klick soll ihm folgen (OnDragEnd). Nicht als behandelt gemeldet: der ScrollViewer holt sich den
+        // Tastaturfokus, sonst ginge Strg+C für die eben gemachte Auswahl ins Leere.
+        if (LinkAt(onPage) is null && BeginSelect(onPage)) return;
         dragging = true;
         dragFrom = point;
         dragOffset = new Vector(Scroller.HorizontalOffset, Scroller.VerticalOffset);
@@ -1224,6 +1367,11 @@ public partial class MainWindow : Window
             ContinueGesture(e);
             return;
         }
+        if (selecting)
+        {
+            ContinueSelect(e.GetPosition(PageCanvas));
+            return;
+        }
         if (!dragging)
         {
             ShowTipUnder(e);
@@ -1241,12 +1389,37 @@ public partial class MainWindow : Window
         Scroller.ScrollToHorizontalOffset(dragOffset.X - (point.X - dragFrom.X));
     }
 
+    /// <summary>
+    /// Mittlere Maustaste schiebt die Ansicht — über Text markiert der linke Zug jetzt, dort bliebe sonst nur das Rad.
+    /// Gezogen wird über OnDragMove wie beim linken Zug.
+    /// </summary>
+    void OnPanStart(object sender, MouseButtonEventArgs e)
+    {
+        if (e.ChangedButton != MouseButton.Middle || layout is null || dragging || selecting || gesture is not null) return;
+        dragFrom = e.GetPosition(Scroller);
+        dragOffset = new Vector(Scroller.HorizontalOffset, Scroller.VerticalOffset);
+        dragging = true;
+        Scroller.Cursor = Cursors.Hand;
+        Scroller.CaptureMouse();
+        e.Handled = true;
+    }
+
+    void OnPanEnd(object sender, MouseButtonEventArgs e)
+    {
+        if (e.ChangedButton == MouseButton.Middle) EndDrag();
+    }
+
     /// <summary>Losgelassen, ohne gezogen zu haben, und über einem Link: dem Link folgen.</summary>
     void OnDragEnd(object sender, MouseButtonEventArgs e)
     {
         if (gesture is not null)
         {
             FinishGesture(e);
+            return;
+        }
+        if (selecting)
+        {
+            EndSelect();
             return;
         }
         if (OpenPendingChoices()) return;
@@ -1319,7 +1492,9 @@ public partial class MainWindow : Window
         var link = layout is null || tool != Tool.None ? null : LinkAt(point);
         var field = layout is null || tool != Tool.None || link is not null ? null : FieldAt(point);
         var annotation = layout is null || link is not null || field is not null ? null : AnnotationAt(point);
-        PageCanvas.Cursor = link is not null ? Cursors.Hand : field is { } hit ? FieldCursor(hit.Field) : ToolCursor();
+        // Über Text der I-Balken: er sagt vorher, ob der nächste Zug markiert oder schiebt (und liest die Kästen ein).
+        var onText = layout is not null && tool == Tool.None && link is null && field is null && CharUnderPoint(point) is { Hit: >= 0 };
+        PageCanvas.Cursor = link is not null ? Cursors.Hand : field is { } hit ? FieldCursor(hit.Field) : onText ? Cursors.IBeam : ToolCursor();
         var tip = link is not null ? (link.Page >= 0 ? $"Seite {link.Page + 1}" : link.Uri)
                 : field is { } under ? FieldTip(under.Field)
                 : annotation is { } found ? AnnotationTip(found.Annotation) : null;
@@ -1359,6 +1534,7 @@ public partial class MainWindow : Window
     void OnDragLost(object sender, MouseEventArgs e)
     {
         if (gesture is not null) CancelGesture();
+        else if (selecting) EndSelect();
         else EndDrag();
     }
 
@@ -1714,6 +1890,7 @@ public partial class MainWindow : Window
         itemsGeneration++;
         choosing = null;
         charBoxes.Clear();
+        ForgetSelection(); // die Zeichennummern gehören zu den alten Seiten
         sketches.Clear(); // hängen an PageCanvas und gehen mit dessen Kindern
         pageRevisions = new int[sizes.Count];
         mainWanted = [];
@@ -1864,6 +2041,9 @@ public partial class MainWindow : Window
             else ShowMessage($"„{fileName}“ ließ sich nicht ersetzen", $"{e.Message}\nDer gespeicherte Stand liegt unter {temp}.");
             return false;
         }
+        // Vor dem nächsten await: sonst meldete der Wächter den eigenen Schreibvorgang als fremde Änderung.
+        fileStamp = StampOf(documentPath);
+        ReloadPill.Visibility = Visibility.Collapsed;
         edits.Clear();
         EditsChanged();
         var saved = await Reload(null, pageTexts, currentPage); // gleiche Seiten, nur die Drehung steckt jetzt in der Datei

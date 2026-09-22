@@ -267,6 +267,8 @@ public partial class MainWindow
             Tool.SignDrawn or Tool.SignImage => SignatureEdit(done, clicked),
             _ => null,
         };
+        if (placing == Tool.Highlight && done.From < 0)
+            ShowNotice($"Seite {done.Page + 1} hat keinen Text (Scan?) – der Textmarker braucht Text");
         if (edit is null || await Edit(edit, done.Page) < 0)
         {
             RemoveSketch(done.Sketch);
@@ -348,11 +350,11 @@ public partial class MainWindow
     {
         try
         {
-            var boxes = await reader.Invoke(document => document.CharBoxes(page));
+            // Hintergrundarbeit: der Zeiger fragt sie über jeder Seite an, die Seitenbilder gehen vor (Review).
+            var boxes = await reader.Invoke(document => document.CharBoxes(page), whenIdle: true);
             if (reader != renderer) return [];
             if (gesture is { Sketch: Path marks } running && running.Page == page && slots.TryGetValue(page, out var slot))
                 ShowSelection(running, marks, new Rect(Canvas.GetLeft(slot.Frame), Canvas.GetTop(slot.Frame), slot.Frame.Width, slot.Frame.Height), boxes);
-            if (boxes.Length == 0 && tool == Tool.Highlight) ShowNotice($"Seite {page + 1} hat keinen Text (Scan?) – der Textmarker braucht Text");
             return boxes;
         }
         catch (Exception e) when (e is PdfException or TaskCanceledException)

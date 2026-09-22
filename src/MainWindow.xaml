@@ -40,7 +40,7 @@
                       ToolTip="Seitenweise blättern (S)" Click="OnPagedClick" />
         <Rectangle Style="{StaticResource ToolSeparator}" />
         <Button x:Name="CopyButton" Style="{StaticResource ToolButton}" Content="{StaticResource IconCopy}"
-                ToolTip="Seite kopieren: Bild und Text (Strg+C) – nur Text: Strg+Umschalt+C" Click="OnCopyClick" />
+                ToolTip="Markierten Text kopieren; ohne Auswahl die Seite als Bild und Text (Strg+C) – nur Text: Strg+Umschalt+C" Click="OnCopyClick" />
         <Button x:Name="SearchButton" AutomationProperties.Name="Suchen" Style="{StaticResource ToolButton}" Content="{StaticResource IconSearch}"
                 ToolTip="Suchen (Strg+F)" Click="OnSearchClick" />
         <Rectangle Style="{StaticResource ToolSeparator}" />
@@ -137,7 +137,8 @@
       <ScrollViewer x:Name="Scroller" HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Visible"
                     PreviewMouseLeftButtonDown="OnDragStart" MouseMove="OnDragMove"
                     PreviewMouseLeftButtonUp="OnDragEnd" LostMouseCapture="OnDragLost"
-                    PreviewMouseRightButtonUp="OnPageRightClick">
+                    PreviewMouseRightButtonUp="OnPageRightClick"
+                    MouseDown="OnPanStart" MouseUp="OnPanEnd">
         <ScrollViewer.Resources>
           <!-- Die Ecke zwischen beiden Leisten füllt die Vorlage von Windows mit dieser Systemfarbe. -->
           <SolidColorBrush x:Key="{x:Static SystemColors.ControlBrushKey}" Color="#141715" />
@@ -221,6 +222,23 @@
                     Click="OnSearchNextClick" />
             <Button Style="{StaticResource ToolButton}" Content="{StaticResource IconClose}" ToolTip="Suche schließen (Esc)" AutomationProperties.Name="Suche schließen"
                     Click="OnSearchCloseClick" />
+          </StackPanel>
+        </Border>
+        <!-- Die offene Datei wurde außerhalb geändert: bleibt stehen, bis neu geladen oder weggeklickt wird. -->
+        <Border x:Name="ReloadPill" Style="{StaticResource Pill}" VerticalAlignment="Top" HorizontalAlignment="Right"
+                Margin="0,0,0,8" Visibility="Collapsed">
+          <StackPanel Orientation="Horizontal">
+            <Viewbox Width="18" Height="18" Margin="10,0,0,0" VerticalAlignment="Center">
+              <Canvas Width="24" Height="24">
+                <Path Data="{StaticResource IconReload}" Stroke="{StaticResource UnsavedBrush}" StrokeThickness="1.7"
+                      StrokeLineJoin="Round" StrokeStartLineCap="Round" StrokeEndLineCap="Round" />
+              </Canvas>
+            </Viewbox>
+            <TextBlock x:Name="ReloadText" Margin="8,0,6,0" VerticalAlignment="Center" />
+            <Button x:Name="ReloadButton" Style="{StaticResource TextButton}" Foreground="{StaticResource AccentBrush}"
+                    AutomationProperties.Name="Neu laden" Content="Neu laden" Click="OnReloadClick" />
+            <Button Style="{StaticResource ToolButton}" Content="{StaticResource IconClose}"
+                    AutomationProperties.Name="Hinweis schließen" ToolTip="Später" Click="OnReloadCloseClick" />
           </StackPanel>
         </Border>
         <!-- Neue Version auf GitHub: bleibt stehen, bis aktualisiert oder weggeklickt wird. -->

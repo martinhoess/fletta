@@ -176,17 +176,26 @@ public sealed class PdfDocument : IDisposable
     }
 
     /// <summary>Text der Seite laut PDFium; leer bei Scans ohne Textschicht.</summary>
-    public unsafe string PageText(int index)
+    public string PageText(int index) => CharText(index, 0, int.MaxValue);
+
+    /// <summary>
+    /// Text der Zeichen [from, from + count) der Zeichenliste — derselben, die CharBoxes zählt: eine Auswahl unter der
+    /// Maus liefert damit ohne Umrechnen ihren Text. Nummern außerhalb der Seite werden begrenzt, leer ohne Textschicht.
+    /// </summary>
+    public unsafe string CharText(int index, int from, int count)
     {
         var page = LoadPage(index);
         var text = Native.FPDFText_LoadPage(page);
         try
         {
-            var count = text == 0 ? 0 : Native.FPDFText_CountChars(text);
-            if (count <= 0) return "";
+            var total = text == 0 ? 0 : Native.FPDFText_CountChars(text);
+            if (total <= 0) return "";
+            from = Math.Clamp(from, 0, total - 1);
+            count = Math.Clamp(count, 0, total - from);
+            if (count == 0) return "";
             var buffer = new ushort[count + 1];
             int written;
-            fixed (ushort* result = buffer) written = Native.FPDFText_GetText(text, 0, count, result);
+            fixed (ushort* result = buffer) written = Native.FPDFText_GetText(text, from, count, result);
             return new string(MemoryMarshal.Cast<ushort, char>(buffer.AsSpan(0, Math.Max(0, written - 1))));
         }
         finally
