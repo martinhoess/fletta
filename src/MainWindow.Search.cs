@@ -29,7 +29,7 @@ public partial class MainWindow
     readonly Dictionary<int, Rect[][]> hitRects = []; // je Seite, in der Reihenfolge ihrer Treffer
     readonly HashSet<int> hitRectsPending = [];        // angefragt oder gescheitert: nicht noch einmal
     int hitGeneration;  // neue Trefferliste: ältere Antworten zu Rechtecken verfallen
-    int searchVersion;  // ändert sich mit allem, was die Marken betrifft; PageSlot.MarkedFor vergleicht dagegen
+    int searchVersion;  // ändert sich mit allem, was die Marken betrifft (Treffer wie Auswahl); PageSlot.MarkedFor vergleicht dagegen
     int textReading;    // Lesekette: ein Wechsel beendet die laufende, sie startet dann neu
     bool readingTexts;
     bool revealPending; // ShowHit wartet auf die Lage des Treffers, um ihn ins Bild zu holen
@@ -249,6 +249,7 @@ public partial class MainWindow
         var key = (page, searchVersion, quarterTurns[page]);
         if (slot.MarkedFor == key) return;
         slot.Marks.Children.Clear();
+        DrawSelection(slot, page); // markierter Text liegt in derselben Leinwand, unter den Treffermarken
         var first = hits.FindIndex(hit => hit.Page == page);
         if (first >= 0 && !hitRects.ContainsKey(page))
         {

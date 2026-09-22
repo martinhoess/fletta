@@ -2,6 +2,12 @@
 
 Die Release-CI übernimmt den Abschnitt der jeweiligen Version als Text des GitHub-Releases.
 
+## 0.14.0
+
+- Text markieren und kopieren: über Text wird der Zeiger zum I-Balken, Ziehen markiert, Strg+C kopiert die Auswahl (ohne Auswahl weiterhin die ganze Seite als Bild und Text). Neben dem Text schiebt Ziehen die Ansicht wie bisher, Esc hebt die Auswahl auf.
+- Die mittlere Maustaste schiebt die Ansicht, auch über Text.
+- Ändert ein anderes Programm die geöffnete Datei, steht oben rechts „… wurde geändert · Neu laden“. Neu geladen wird nur auf Klick; eigene ungespeicherte Änderungen fragt Fletta vorher ab, die Lesestelle bleibt stehen und die Drehung der Ansicht, solange die Seitenzahl passt.
+
 ## 0.13.1
 
 - Neuer Knopf „Updates“ oben in der Werkzeugleiste: zeigt die installierte Version, prüft auf Wunsch sofort und bietet mit „Auch Vorabversionen anbieten“ neue Testversionen über den gewohnten Hinweis „… ist da · Aktualisieren“ an – ohne Setup von Hand. Mit Vorabversionen sieht Fletta stündlich statt täglich nach.

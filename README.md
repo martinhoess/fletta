@@ -5,6 +5,9 @@
 einfügen, in eine neue PDF kopieren oder verschieben; Anmerkungen (Textmarker, Notiz, Freihand, Text), Unterschrift
 (gezeichnet oder aus Bild) und Formulare ausfüllen. Geändert wird die Datei erst mit `Strg+S`.
 
+Text lässt sich mit der Maus markieren und mit `Strg+C` kopieren. Ändert ein anderes Programm die geöffnete Datei,
+meldet Fletta das oben rechts und lädt sie auf Klick neu.
+
 <img height="500" alt="image" src="https://github.com/user-attachments/assets/c97593a5-b6a1-4453-9a34-cfe2773217ac" />
 
 ## Technik
@@ -61,13 +64,14 @@ Fletta.exe --measure datei   öffnet, rendert, schreibt die Zeitmarken auf stder
 | ← / → | vorige / nächste Seite |
 | Pos1 / Ende | erste / letzte Seite |
 | ↑ ↓, Bild↑ Bild↓, Leertaste (mit Umschalt zurück) | scrollen |
-| linke Maustaste halten und ziehen | Ansicht verschieben |
+| linke Maustaste halten und ziehen | über Text: markieren (Zeiger wird zum I-Balken), sonst Ansicht verschieben |
+| mittlere Maustaste halten und ziehen | Ansicht verschieben, auch über Text |
 | F1 oder `?` | Übersicht der Tastenkürzel |
 | Strg+O | öffnen |
 | Strg+P | drucken (Windows-Druckdialog mit Vorschau: alle Seiten oder Bereiche, markierte Miniaturen vorbelegt) |
-| Strg+C | aktuelle Seite als Bild (200 dpi) und Text in die Zwischenablage |
+| Strg+C | markierten Text kopieren; ohne Auswahl die aktuelle Seite als Bild (200 dpi) und Text |
 | Strg+Umschalt+C | nur den Text der aktuellen Seite |
-| Esc | Menü, Suche, Werkzeug oder Mehrfachauswahl schließen, sonst Fenster schließen |
+| Esc | Menü, Suche, Werkzeug, Auswahl oder Mehrfachauswahl schließen, sonst Fenster schließen |
 
 Änderungen sammelt Fletta, bis gespeichert wird; der Fenstertitel zeigt dann „●“, oben rechts steht ein
 Speichern-Knopf, und beim Schließen

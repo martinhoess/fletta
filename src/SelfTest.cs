@@ -356,6 +356,13 @@ static class SelfTest
             var last = MainWindow.CharAt(boxes, new Point(0.99, (500 - 254) / 500.0), new Size(100, 500));
             failures += Check("Textmarker: Zeichen unter der Maus", first == 0 && last > 3);
             failures += Check("Textmarker: eine Zeile", MainWindow.LineRects(boxes, first, last).Count == 1);
+
+            // Auswahl mit der Maus: der Druck muss auf einem Zeichenkasten liegen, sonst schiebt der Zug die Ansicht.
+            failures += Check("Auswahl: Zeichen unter dem Druck", MainWindow.CharUnder(boxes, new Point(12 / 100.0, (500 - 254) / 500.0)) == 0);
+            failures += Check("Auswahl: neben dem Text keines", MainWindow.CharUnder(boxes, new Point(0.99, 0.95)) < 0);
+            failures += Check("Auswahl: Text der markierten Zeichen", doc.CharText(0, first, last - first + 1) == "Seite Eins");
+            failures += Check("Auswahl: Nummern außerhalb der Seite werden begrenzt", doc.CharText(0, -5, 1000) == doc.PageText(0));
+
             new AddHighlight(0, first, last - first + 1).Apply(doc);
             var marked = doc.Annotations(0).Single();
             failures += Check("Textmarker angelegt, um den Text herum", marked.Subtype == 9 && marked.Area.Left < 0.12 && marked.Area.Top < 0.5 && marked.Area.Bottom > 0.49);
