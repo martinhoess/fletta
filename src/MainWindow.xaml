@@ -256,13 +256,17 @@
       </Grid>
     </Grid>
 
-    <!-- Tastenkürzel-Übersicht (F1 oder ?), Klick daneben oder Esc schließt. -->
+    <!-- Tastenkürzel-Übersicht (F1 oder ?), Klick daneben oder Esc schließt. Passt die Liste nicht ins Fenster,
+         scrollt nur sie; Überschrift und Fußzeile bleiben stehen (DockPanel statt StackPanel, sonst bekäme der
+         ScrollViewer unbegrenzte Höhe und scrollte nie). -->
     <Border x:Name="HelpOverlay" Grid.Row="1" Background="#CC141715" Visibility="Collapsed" MouseLeftButtonDown="OnHelpOverlayClick">
       <Border Background="{StaticResource ChromeBrush}" BorderBrush="{StaticResource LineBrush}" BorderThickness="1"
-              CornerRadius="12" Padding="22,18" MaxWidth="620" HorizontalAlignment="Center" VerticalAlignment="Center">
-        <StackPanel>
-          <TextBlock Text="Tastenkürzel" FontSize="17" FontWeight="SemiBold" Margin="0,0,0,12" />
-          <ItemsControl x:Name="HelpKeys">
+              CornerRadius="12" Padding="22,18" Margin="16" MaxWidth="620" HorizontalAlignment="Center" VerticalAlignment="Center">
+        <DockPanel>
+          <TextBlock DockPanel.Dock="Top" Text="Tastenkürzel" FontSize="17" FontWeight="SemiBold" Margin="0,0,0,12" />
+          <TextBlock DockPanel.Dock="Bottom" Text="Esc oder F1 schließt diese Übersicht." Foreground="{StaticResource MutedBrush}" Margin="0,14,0,0" />
+          <ScrollViewer x:Name="HelpScroller" VerticalScrollBarVisibility="Auto" Focusable="False">
+          <ItemsControl x:Name="HelpKeys" Margin="0,0,8,0">
             <ItemsControl.ItemTemplate>
               <DataTemplate>
                 <Grid Margin="0,3">
@@ -270,14 +274,14 @@
                     <ColumnDefinition Width="210" />
                     <ColumnDefinition />
                   </Grid.ColumnDefinitions>
-                  <TextBlock Text="{Binding Keys}" FontFamily="Cascadia Mono, Consolas" />
+                  <TextBlock Text="{Binding Keys}" FontFamily="Cascadia Mono, Consolas" TextWrapping="Wrap" Margin="0,0,12,0" />
                   <TextBlock Grid.Column="1" Text="{Binding Action}" Foreground="{StaticResource MutedBrush}" TextWrapping="Wrap" />
                 </Grid>
               </DataTemplate>
             </ItemsControl.ItemTemplate>
           </ItemsControl>
-          <TextBlock Text="Esc oder F1 schließt diese Übersicht." Foreground="{StaticResource MutedBrush}" Margin="0,14,0,0" />
-        </StackPanel>
+          </ScrollViewer>
+        </DockPanel>
       </Border>
     </Border>
   </Grid>

@@ -5,6 +5,7 @@ Die Release-CI übernimmt den Abschnitt der jeweiligen Version als Text des GitH
 ## 0.14.1
 
 - Strg+W schließt das Fenster wie Alt+F4, auch während im Such- oder Seitenfeld getippt wird. Ungespeicherte Änderungen fragt Fletta vorher ab.
+- Die Tastenkürzel-Übersicht (F1) scrollt, wenn das Fenster zu klein für die ganze Liste ist; vorher war das Ende abgeschnitten. Lange Kürzel brechen um, statt in die Beschreibung zu laufen. Solange sie offen ist, scrollen Pfeiltasten, Bild↑/↓, Leertaste, Pos1/Ende und das Mausrad ihre Liste statt des Dokuments dahinter, und nur ein Klick neben den Kasten schließt sie.
 
 ## 0.14.0
 

@@ -718,11 +718,20 @@ public partial class MainWindow : Window
         if ((e.OriginalSource as FrameworkElement)?.DataContext is OutlineRow { Page: >= 0 } row) GoTo(row.Page);
     }
 
-    void ToggleHelp() => HelpOverlay.Visibility = HelpOverlay.IsVisible ? Visibility.Collapsed : Visibility.Visible;
+    void ToggleHelp()
+    {
+        HelpScroller.ScrollToTop(); // jedes Öffnen beginnt oben, nicht dort, wo zuletzt gescrollt wurde
+        PageCanvas.ToolTip = null; // ein Tooltip der Seite (Anmerkung, Link) stand sonst über der Übersicht
+        HelpOverlay.Visibility = HelpOverlay.IsVisible ? Visibility.Collapsed : Visibility.Visible;
+    }
 
     void OnHelpClick(object sender, RoutedEventArgs e) => ToggleHelp();
 
-    void OnHelpOverlayClick(object sender, MouseButtonEventArgs e) => HelpOverlay.Visibility = Visibility.Collapsed;
+    /// <summary>Nur ein Klick neben den Kasten schließt; drin (Text, Rand der Bildlaufleiste neben dem Griff) bleibt sie offen.</summary>
+    void OnHelpOverlayClick(object sender, MouseButtonEventArgs e)
+    {
+        if (e.OriginalSource == HelpOverlay) HelpOverlay.Visibility = Visibility.Collapsed;
+    }
 
     void ToggleSidebar()
     {
@@ -1240,6 +1249,13 @@ public partial class MainWindow : Window
             e.Handled = true;
             return;
         }
+        // Vor den Feldern: bei offener Übersicht gehören die Bildlauftasten ihr, auch wenn Such-, Seiten- oder
+        // Formularfeld den Fokus haben (die Leertaste hängte sonst verdeckt ein Leerzeichen an den Suchbegriff).
+        if (HelpOverlay.IsVisible && ScrollHelp(e.Key))
+        {
+            e.Handled = true;
+            return;
+        }
         // Im Seitenfeld und im Eingabefeld eines Formulars gehören die Tasten dem Feld (Enter, Esc, Tab behandeln die selbst).
         if (PageBox.IsKeyboardFocused || fieldEditor?.IsKeyboardFocused == true)
         {
@@ -1317,6 +1333,25 @@ public partial class MainWindow : Window
             default: base.OnPreviewKeyDown(e); return;
         }
         e.Handled = true;
+    }
+
+    /// <summary>Bildlauftasten in der Kürzelübersicht statt im Dokument dahinter; false für alle anderen Tasten.</summary>
+    bool ScrollHelp(Key key)
+    {
+        var plain = Keyboard.Modifiers == ModifierKeys.None;
+        var shift = Keyboard.Modifiers == ModifierKeys.Shift;
+        switch (key)
+        {
+            case Key.Down when plain: HelpScroller.LineDown(); break;
+            case Key.Up when plain: HelpScroller.LineUp(); break;
+            case Key.PageDown or Key.Space when plain: HelpScroller.PageDown(); break;
+            case Key.PageUp when plain: HelpScroller.PageUp(); break;
+            case Key.Space when shift: HelpScroller.PageUp(); break;
+            case Key.Home when plain: HelpScroller.ScrollToTop(); break;
+            case Key.End when plain: HelpScroller.ScrollToBottom(); break;
+            default: return false;
+        }
+        return true;
     }
 
     /// <summary>„?“ liegt je nach Tastatur auf verschiedenen Tasten (deutsch: Umschalt+ß) — daher über den Text.</summary>
@@ -1558,6 +1593,14 @@ public partial class MainWindow : Window
 
     protected override void OnPreviewMouseWheel(MouseWheelEventArgs e)
     {
+        // Bei offener Übersicht gehört das Rad ihrer Liste, auch Strg+Rad: sonst zoomte oder blätterte das Dokument
+        // dahinter, solange WPF die ruhende Maus noch über der Seite wähnt.
+        if (HelpOverlay.IsVisible)
+        {
+            e.Handled = true;
+            HelpScroller.RaiseEvent(new MouseWheelEventArgs(e.MouseDevice, e.Timestamp, e.Delta) { RoutedEvent = MouseWheelEvent });
+            return;
+        }
         if (Keyboard.Modifiers != ModifierKeys.Control)
         {
             // Über den Miniaturen bewegt das Rad das Dokument, die Leiste folgt der aktuellen Seite (Rückmeldung,
