@@ -60,6 +60,7 @@ public partial class MainWindow : Window
         new("Strg+O", "öffnen (neues Fenster, wenn schon eines offen ist)"),
         new("F1 oder ?", "diese Übersicht"),
         new("Esc", "Übersicht oder Auswahl schließen, sonst Fenster schließen"),
+        new("Strg+W", "Fenster schließen"),
     ];
 
     /// <summary>Ein Seitenelement auf der Leinwand, wird beim Scrollen wiederverwendet.</summary>
@@ -1231,6 +1232,14 @@ public partial class MainWindow : Window
 
     protected override void OnPreviewKeyDown(KeyEventArgs e)
     {
+        // Strg+W schließt wie Alt+F4, auch aus Such-, Seiten- oder Formularfeld; OnClosing fragt
+        // ungespeicherte Änderungen ab. Nicht während eines Werkzeugzugs, dafür gilt der Riegel unten.
+        if (e.Key == Key.W && Keyboard.Modifiers == ModifierKeys.Control && gesture is null)
+        {
+            Close();
+            e.Handled = true;
+            return;
+        }
         // Im Seitenfeld und im Eingabefeld eines Formulars gehören die Tasten dem Feld (Enter, Esc, Tab behandeln die selbst).
         if (PageBox.IsKeyboardFocused || fieldEditor?.IsKeyboardFocused == true)
         {

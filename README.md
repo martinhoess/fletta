@@ -72,6 +72,7 @@ Fletta.exe --measure datei   öffnet, rendert, schreibt die Zeitmarken auf stder
 | Strg+C | markierten Text kopieren; ohne Auswahl die aktuelle Seite als Bild (200 dpi) und Text |
 | Strg+Umschalt+C | nur den Text der aktuellen Seite |
 | Esc | Menü, Suche, Werkzeug, Auswahl oder Mehrfachauswahl schließen, sonst Fenster schließen |
+| Strg+W | Fenster schließen (wie Alt+F4) |
 
 Änderungen sammelt Fletta, bis gespeichert wird; der Fenstertitel zeigt dann „●“, oben rechts steht ein
 Speichern-Knopf, und beim Schließen

@@ -2,6 +2,10 @@
 
 Die Release-CI übernimmt den Abschnitt der jeweiligen Version als Text des GitHub-Releases.
 
+## 0.14.1
+
+- Strg+W schließt das Fenster wie Alt+F4, auch während im Such- oder Seitenfeld getippt wird. Ungespeicherte Änderungen fragt Fletta vorher ab.
+
 ## 0.14.0
 
 - Text markieren und kopieren: über Text wird der Zeiger zum I-Balken, Ziehen markiert, Strg+C kopiert die Auswahl (ohne Auswahl weiterhin die ganze Seite als Bild und Text). Neben dem Text schiebt Ziehen die Ansicht wie bisher, Esc hebt die Auswahl auf.
