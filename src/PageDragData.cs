@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.IO;
 using System.Windows;
 using Fletta.Pdfium;
@@ -13,8 +14,8 @@ sealed class PageDragData(int[] pages, Func<string> export) : IDataObject
     // Der Explorer verschiebt auf demselben Laufwerk sonst standardmäßig — Seiten sollen kopiert werden,
     // verschoben nur mit Umschalt. Der Wert ist DROPEFFECT_COPY.
     const string PreferredDropEffect = "Preferred DropEffect";
-    // Ein Fenster mit ungespeichertem Einfügen braucht die Datei fürs Rückgängig-Machen noch.
-    // ponytail: feste Frist statt Nachfrage bei den Fenstern; ein Fenster, das länger offen bleibt, verliert Strg+Z dafür.
+    // Ein Fenster mit ungespeichertem Einfügen braucht seine Kopie (InsertFiles) fürs Rückgängig-Machen noch: Ordner eines
+    // laufenden Fletta bleiben, die Frist gilt erst nach dessen Ende (und für alte Ordnernamen ohne Prozess-ID).
     static readonly TimeSpan KeepExports = TimeSpan.FromDays(7);
 
     string? file;
@@ -23,22 +24,36 @@ sealed class PageDragData(int[] pages, Func<string> export) : IDataObject
     public string? Error { get; private set; }
 
     /// <summary>
-    /// Ordner für gezogene Seiten. Je Zug ein eigener Unterordner: so behält die Datei einen lesbaren Namen,
-    /// und ein anderes Fenster, das sie eingefügt hat, findet sie beim Rückgängig-Machen noch vor.
+    /// Ordner für gezogene Seiten. Je Zug ein eigener Unterordner „Prozess-ID-guid“: so behält die Datei einen
+    /// lesbaren Namen, und ein anderes Fenster, das sie eingefügt hat, findet sie beim Rückgängig-Machen noch vor.
     /// </summary>
     public static string ExportFolder() =>
-        Directory.CreateDirectory(Path.Combine(Path.GetTempPath(), "Fletta", Guid.NewGuid().ToString("N"))).FullName;
+        Directory.CreateDirectory(Path.Combine(Path.GetTempPath(), "Fletta", $"{Environment.ProcessId}-{Guid.NewGuid():N}")).FullName;
 
-    /// <summary>Beim Start: Züge älter als eine Woche wegräumen. Was noch in Benutzung ist, bleibt eben liegen.</summary>
+    /// <summary>Beim Start: Züge älter als eine Woche wegräumen, außer das ziehende Fenster läuft noch.</summary>
     public static void CleanUp()
     {
         var root = new DirectoryInfo(Path.Combine(Path.GetTempPath(), "Fletta"));
         if (!root.Exists) return;
-        foreach (var folder in root.EnumerateDirectories().Where(folder => DateTime.UtcNow - folder.CreationTimeUtc > KeepExports))
+        foreach (var folder in root.EnumerateDirectories().Where(folder => DateTime.UtcNow - folder.CreationTimeUtc > KeepExports && !OwnerRuns(folder.Name)))
         {
             try { folder.Delete(recursive: true); }
             catch (Exception e) when (e is IOException or UnauthorizedAccessException) { }
         }
+    }
+
+    /// <summary>Läuft das Fletta, dessen Prozess-ID vorn im Ordnernamen steht? Alte Namen ohne Prozess-ID: nein.</summary>
+    internal static bool OwnerRuns(string folderName)
+    {
+        var dash = folderName.IndexOf('-');
+        if (dash < 0 || !int.TryParse(folderName.AsSpan(0, dash), out var id)) return false;
+        try
+        {
+            using var owner = Process.GetProcessById(id);
+            using var self = Process.GetCurrentProcess();
+            return owner.ProcessName == self.ProcessName; // Prozess-IDs werden wiedervergeben
+        }
+        catch (Exception e) when (e is ArgumentException or InvalidOperationException) { return false; }
     }
 
     public object? GetData(string format, bool autoConvert)

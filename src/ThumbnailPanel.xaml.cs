@@ -160,7 +160,7 @@ public partial class ThumbnailPanel : UserControl
         if (page < 0 || page >= items.Length) return;
         items[page].IsCurrent = true;
         // Immer, nicht nur außerhalb von visible: das zählt angeschnittene Einträge mit, die Leiste hing beim Scrollen
-        // eine Seite hinterher und kam am Dokumentende nicht ganz mit (Rückmeldung, 2026-09-13). Ganz sichtbar: kein Bildlauf.
+        // eine Seite hinterher und kam am Dokumentende nicht ganz mit (nach Rückmeldung, 2026-09-13). Ganz sichtbar: kein Bildlauf.
         List.ScrollIntoView(items[page]);
     }
 

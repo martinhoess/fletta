@@ -2,6 +2,14 @@
 
 Die Release-CI übernimmt den Abschnitt der jeweiligen Version als Text des GitHub-Releases.
 
+## 0.14.2
+
+- Wurde die geöffnete PDF von einem anderen Programm geändert, überschreibt Strg+S sie nicht mehr mit dem alten Stand, und Strg+Z wendet die eigenen Schritte nicht auf den neuen Inhalt an. Fletta sagt dann „… wurde außerhalb geändert – erst neu laden“ und bietet „Neu laden“ oder „Abbrechen“ an.
+- Seiten, die ein anderes Fenster eingefügt hat, bleiben für dessen Strg+Z erhalten, solange es offen ist – vorher räumte Fletta sie nach sieben Tagen weg.
+- Geladene Setups früherer Versionen räumt Fletta aus dem Temp-Ordner, ein abgebrochener Download bleibt nicht als halbe Datei liegen.
+- Beim Deinstallieren fragen offene Fenster mit ungespeicherten Änderungen erst nach. Läuft Fletta nach etwa zehn Sekunden noch, fragt die Deinstallation „Wiederholen“ oder „Abbrechen“, statt es hart zu beenden.
+- PDFium chromium/8125 (vorher 8044).
+
 ## 0.14.1
 
 - Strg+W schließt das Fenster wie Alt+F4, auch während im Such- oder Seitenfeld getippt wird. Ungespeicherte Änderungen fragt Fletta vorher ab.

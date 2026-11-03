@@ -12,6 +12,7 @@ jobs:
   release:
     # windows-2025 bringt .NET-10-SDK und Inno Setup 6.7 mit.
     runs-on: windows-2025
+    timeout-minutes: 20
     defaults:
       run:
         shell: pwsh

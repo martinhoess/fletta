@@ -18,7 +18,10 @@ static class AskDialog
     /// Mit Eingabefeld (etwa ein PasswordBox) zwischen Text und Knöpfen; es hat den Fokus, Enter nimmt dann den
     /// ersten Knopf (IsDefault), Esc den letzten.
     /// </summary>
-    public static int Show(Window owner, string text, UIElement? input, params string[] buttons)
+    public static int Show(Window owner, string text, UIElement? input, params string[] buttons) => Show(owner, text, input, 0, buttons);
+
+    /// <summary>focus: Knopf, der anfangs den Fokus hat und den Enter auslöst — für Rückfragen, bei denen der erste Knopf etwas verwirft.</summary>
+    public static int Show(Window owner, string text, UIElement? input, int focus, params string[] buttons)
     {
         var choice = buttons.Length - 1;
         var row = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right, Margin = new Thickness(0, 20, 0, 0) };
@@ -59,7 +62,7 @@ static class AskDialog
                 Style = (Style)owner.FindResource("TextButton"),
                 Focusable = true, // der Stil nimmt Werkzeugknöpfen den Fokus; hier soll Tab wandern
                 FocusVisualStyle = null, // den Fokus zeigt die grüne Hervorhebung
-                IsDefault = index == 0,
+                IsDefault = index == focus,
                 Margin = new Thickness(6, 0, 0, 0),
             };
             // Enter löst den Knopf mit dem Fokus aus, nicht den IsDefault-Knopf: grün ist deshalb immer der fokussierte,
@@ -80,7 +83,7 @@ static class AskDialog
         // Ein zusammengesetztes Eingabefeld (Text samt Größenwahl) nimmt den Fokus nicht selbst: dann sein erstes Element.
         dialog.Loaded += (_, _) =>
         {
-            if (input is null) row.Children[0].Focus();
+            if (input is null) row.Children[focus].Focus();
             else if (!input.Focus()) input.MoveFocus(new TraversalRequest(FocusNavigationDirection.First));
         };
         dialog.ShowDialog();

@@ -34,7 +34,11 @@ public partial class App : Application
 
         var path = e.Args.FirstOrDefault(a => !a.StartsWith("--"));
         IsMeasuring = flags.Contains("--measure");
-        if (!IsMeasuring) PageDragData.CleanUp();
+        if (!IsMeasuring)
+        {
+            PageDragData.CleanUp();
+            Updater.CleanUp();
+        }
         new MainWindow(path, measure: IsMeasuring).Show();
     }
 

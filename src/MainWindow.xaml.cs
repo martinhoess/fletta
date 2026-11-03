@@ -132,6 +132,7 @@ public partial class MainWindow : Window
     string documentPath = "";
     FileSystemWatcher? fileWatcher;               // horcht auf Änderungen an der offenen Datei, siehe WatchFile
     (DateTime Written, long Length) fileStamp;    // Stand der Datei, den dieses Fenster zeigt
+    (DateTime Written, long Length) loadedStamp;  // Stand beim letzten Laden; der Hinweis rückt fileStamp weiter, dieser bleibt
     (DateTime Written, long Length) fileGrowing;  // zuletzt gesehener Stand, solange noch geschrieben wird
     readonly DispatcherTimer fileSettle = new() { Interval = TimeSpan.FromSeconds(1) };
     string? password;      // der geöffneten Datei, für jedes Neuladen (Rückgängig, Speichern)
@@ -240,7 +241,7 @@ public partial class MainWindow : Window
     }
 
     /// <summary>Zeit und Länge der Datei; beide gleich heißt: derselbe Stand. default, wenn sie gerade nicht lesbar ist.</summary>
-    static (DateTime Written, long Length) StampOf(string path)
+    internal static (DateTime Written, long Length) StampOf(string path)
     {
         try
         {
@@ -289,19 +290,51 @@ public partial class MainWindow : Window
     {
         await FlushFieldEditor();
         if (renderer is null || BlockedByWork()) return;
+        if (HasUnsavedEdits && AskDialog.Show(this, $"„{fileName}“ wurde außerhalb geändert. Neu laden verwirft die eigenen Änderungen.",
+                                              null, 1, "Neu laden", "Abbrechen") != 0) return;
+        await ReloadFromDisk();
+    }
+
+    /// <summary>Den Stand auf der Platte laden, eigene Änderungen verwerfen.</summary>
+    async Task ReloadFromDisk()
+    {
         if (!Readable(documentPath))
         {
             // Schreibt gerade doch noch jemand, lädt Fletta nicht: ein Fehlschlag ließe das Fenster leer zurück.
             ShowNotice($"„{fileName}“ ist gerade in Arbeit – gleich noch einmal versuchen");
             return;
         }
-        if (HasUnsavedEdits && AskDialog.Show(this, $"„{fileName}“ wurde außerhalb geändert. Neu laden verwirft die eigenen Änderungen.",
-                                              "Neu laden", "Abbrechen") != 0) return;
         ReloadPill.Visibility = Visibility.Collapsed;
         fileStamp = StampOf(documentPath);
         edits.Clear();
         EditsChanged();
         if (await Reload((int[])quarterTurns.Clone(), null, currentPage)) ShowNotice($"„{fileName}“ neu geladen");
+    }
+
+    /// <summary>Weicht der Stand auf der Platte vom geladenen ab? Nicht lesbar (default) zählt nicht als geändert.</summary>
+    internal static bool ChangedSince((DateTime Written, long Length) loaded, (DateTime Written, long Length) now) =>
+        now != default && now != loaded;
+
+    /// <summary>
+    /// Vor Speichern, Rückgängig und Wiederanwenden: wurde die Datei seit dem Laden von außen geändert, überschriebe
+    /// Speichern die fremde Fassung, und Neuladen wendete die eigenen Schritte auf einen anderen Inhalt an. Dann nur fragen.
+    /// </summary>
+    async Task<bool> BlockedByOutsideChange()
+    {
+        if (!ChangedSince(loadedStamp, StampOf(documentPath))) return false;
+        if (ConfirmReloadAfterOutsideChange()) await ReloadFromDisk();
+        return true;
+    }
+
+    /// <summary>Rückfrage nach einer Änderung von außen; true = neu laden. „Abbrechen“ hat den Fokus, Enter verwirft nichts.</summary>
+    bool ConfirmReloadAfterOutsideChange()
+    {
+        var text = $"„{fileName}“ wurde außerhalb geändert – erst neu laden.";
+        if (HasUnsavedEdits) text += " Neu laden verwirft die eigenen Änderungen.";
+        // Kopieren geht nur, solange das Dokument offen ist (nicht mitten im Speichern).
+        if (HasUnsavedEdits && renderer is { Closed.IsCompleted: false })
+            text += " Zum Behalten vorher die Seiten per Rechtsklick auf die Miniaturen „In neue PDF kopieren …“.";
+        return AskDialog.Show(this, text, null, 1, "Neu laden", "Abbrechen") == 0;
     }
 
     void OnReloadCloseClick(object sender, RoutedEventArgs e) => ReloadPill.Visibility = Visibility.Collapsed;
@@ -474,6 +507,7 @@ public partial class MainWindow : Window
         fileName = Path.GetFileName(path);
         Title = $"{fileName} – Fletta";
         password = null;
+        loadedStamp = StampOf(documentPath); // vor dem ersten await, wie in Reload
         while (true)
         {
             ShowLoadingAfterDelay(opening);
@@ -493,6 +527,7 @@ public partial class MainWindow : Window
                     return;
                 }
                 password = entered;
+                loadedStamp = StampOf(documentPath);
                 opening = renderer = new PageRenderer(path, Dispatcher, Deliver, password);
             }
             catch (PdfException e)
@@ -1603,8 +1638,8 @@ public partial class MainWindow : Window
         }
         if (Keyboard.Modifiers != ModifierKeys.Control)
         {
-            // Über den Miniaturen bewegt das Rad das Dokument, die Leiste folgt der aktuellen Seite (Rückmeldung,
-            // 2026-09-13). Die Gliederung scrollt weiter selbst.
+            // Über den Miniaturen bewegt das Rad das Dokument, die Leiste folgt der aktuellen Seite (nach
+            // Rückmeldung, 2026-09-13). Die Gliederung scrollt weiter selbst.
             var overThumbs = Thumbs.IsMouseOver && layout is not null;
             if (paged && layout is not null && (Scroller.IsMouseOver || overThumbs)) FlipWithWheel(e);
             else if (overThumbs)
@@ -1904,6 +1939,26 @@ public partial class MainWindow : Window
         {
             if (renderer != opening) return -1;
             ShowNotice($"Änderung nicht möglich: {e.Message}");
+            if (edits.Count > 0 && ChangedSince(loadedStamp, StampOf(documentPath)))
+            {
+                // Halb geändert und außen geändert: Wiederanwenden passt nicht zur Datei, Behalten nicht zur Ansicht.
+                // Vor dem Schließen den Stand im Speicher daneben retten, sonst wären die gesammelten Schritte weg.
+                var target = Path.Combine(Path.GetDirectoryName(documentPath)!,
+                    $"{Path.GetFileNameWithoutExtension(documentPath)} – gerettet {DateTime.Now:yyyy-MM-dd HHmmss}.pdf");
+                string? rescue = target;
+                try { await opening.Invoke(document => document.SaveAs(target)); }
+                catch (Exception failed) when (failed is PdfException or IOException or UnauthorizedAccessException or TaskCanceledException)
+                {
+                    rescue = null;
+                }
+                CloseDocument();
+                ShowMessage($"„{fileName}“ wurde außerhalb geändert",
+                    $"Die Änderung schlug fehl ({e.Message}), und die gesammelten Schritte passen nicht mehr zur Datei. "
+                    + (rescue is null ? "Der Stand mit den eigenen Änderungen ließ sich nicht retten. "
+                                      : $"Der Stand mit den eigenen Änderungen liegt unter {rescue}; er kann den fehlgeschlagenen Schritt halb enthalten. ")
+                    + "Mit Strg+O neu öffnen.");
+                return -1;
+            }
             // PDFium kann ein Dokument halb geändert zurücklassen (FPDF_MovePages): neu laden, gesammelte Schritte wieder anwenden.
             await Reload(quarterTurns, pageTexts, currentPage);
             return -1;
@@ -1967,11 +2022,26 @@ public partial class MainWindow : Window
         busy = true;
         try
         {
+            // Gesammelte Schritte nie auf einen von außen geänderten Inhalt anwenden: fragen, sonst verwerfen.
+            if (edits.Count > 0 && ChangedSince(loadedStamp, StampOf(documentPath)))
+            {
+                if (!ConfirmReloadAfterOutsideChange())
+                {
+                    if (renderer is { Closed.IsCompleted: true }) CloseDocument(); // Speichern hatte schon geschlossen
+                    return false;
+                }
+                ReloadPill.Visibility = Visibility.Collapsed;
+                fileStamp = StampOf(documentPath);
+                edits.Clear();
+                EditsChanged();
+                texts = null;
+            }
             if (renderer is { } old)
             {
                 old.Dispose();
                 await old.Closed;
             }
+            loadedStamp = StampOf(documentPath); // vor dem Öffnen: ändert jemand währenddessen, fällt es beim nächsten Mal auf
             var opening = renderer = new PageRenderer(documentPath, Dispatcher, Deliver, password);
             var replay = edits.Select(entry => entry.Edit).ToArray();
             // Sofort anstellen, vor dem Warten aufs Öffnen: Aufgaben laufen vor Hintergrundarbeit, sonst läse die Suche in
@@ -2011,11 +2081,17 @@ public partial class MainWindow : Window
             return;
         }
         // ponytail: Drehungen nach der zurückgenommenen Änderung gehen mit verloren; ein eigener Verlauf je Drehung erst, wenn das stört.
-        var (_, turnsBefore, textsBefore) = edits[^1];
+        var last = edits[^1];
+        var (_, turnsBefore, textsBefore) = last;
         edits.RemoveAt(edits.Count - 1);
         EditsChanged();
         if (await Reload(turnsBefore, textsBefore, currentPage))
             ShowNotice(edits.Count == 0 ? "Alle Änderungen zurückgenommen" : "Letzte Änderung zurückgenommen");
+        else if (layout is not null)
+        {
+            edits.Add(last); // Abbrechen nach einer Änderung von außen: nichts zurückgenommen, das Dokument ist unverändert
+            EditsChanged();
+        }
     }
 
     /// <summary>
@@ -2033,6 +2109,7 @@ public partial class MainWindow : Window
             ShowNotice("Nichts zu speichern");
             return true;
         }
+        if (await BlockedByOutsideChange()) return false;
         var opening = renderer;
         var temp = Path.Combine(Path.GetDirectoryName(documentPath)!, $".{Path.GetFileNameWithoutExtension(documentPath)}.fletta-{Guid.NewGuid():N}.tmp");
         busy = true;
@@ -2080,15 +2157,23 @@ public partial class MainWindow : Window
         await opening.Closed;
         try
         {
+            // Seit der Prüfung oben verging Zeit (Signatur-Rückfrage, Schreiben): nicht über eine fremde Fassung ersetzen.
+            if (ChangedSince(loadedStamp, StampOf(documentPath))) throw new IOException($"„{fileName}“ wurde außerhalb geändert");
             File.Move(temp, documentPath, overwrite: true);
         }
         catch (Exception e) when (e is IOException or UnauthorizedAccessException)
         {
             // Original unverändert: Zwischenstand wiederherstellen. Die geschriebene Kopie erst weg, wenn das klappt.
+            var hadEdits = edits.Count > 0;
             if (await Reload(turns, pageTexts, currentPage))
             {
-                TryDelete(temp);
-                ShowNotice($"Speichern fehlgeschlagen: {e.Message}");
+                if (hadEdits && edits.Count == 0) // „Neu laden“ nach einer Änderung von außen: die Kopie ist der einzige Rest
+                    AskDialog.Show(this, $"Speichern fehlgeschlagen: {e.Message}. Die eigenen Änderungen sind verworfen, der gespeicherte Stand liegt unter {temp}.", "OK");
+                else
+                {
+                    TryDelete(temp);
+                    ShowNotice($"Speichern fehlgeschlagen: {e.Message}");
+                }
             }
             else ShowMessage($"„{fileName}“ ließ sich nicht ersetzen", $"{e.Message}\nDer gespeicherte Stand liegt unter {temp}.");
             return false;

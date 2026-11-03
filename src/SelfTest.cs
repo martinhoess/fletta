@@ -52,6 +52,18 @@ static class SelfTest
             File.WriteAllText(junk, "kein PDF");
             failures += Check("kaputte Datei", OpenError(junk) == PdfException.FormatError);
 
+            // Datei nach dem Laden von außen geändert: Speichern, Rückgängig und Wiederanwenden sind blockiert.
+            var outside = Path.Combine(dir.FullName, "von außen.pdf");
+            File.WriteAllText(outside, "Stand eins");
+            var loaded = MainWindow.StampOf(outside);
+            failures += Check("Datei unverändert: Speichern frei", !MainWindow.ChangedSince(loaded, MainWindow.StampOf(outside)));
+            File.WriteAllText(outside, "Stand zwei, länger");
+            failures += Check("Datei von außen geändert: Speichern blockiert", MainWindow.ChangedSince(loaded, MainWindow.StampOf(outside)));
+            var sameLength = MainWindow.StampOf(outside);
+            File.SetLastWriteTimeUtc(outside, sameLength.Written.AddSeconds(2));
+            failures += Check("gleiche Länge, neue Zeit: Speichern blockiert", MainWindow.ChangedSince(sameLength, MainWindow.StampOf(outside)));
+            failures += Check("Datei gerade nicht lesbar: kein Block", !MainWindow.ChangedSince(loaded, MainWindow.StampOf(Path.Combine(dir.FullName, "fehlt.pdf"))));
+
             failures += LayoutChecks();
             failures += PasswordChecks(dir.FullName);
             failures += EditChecks(good, dir.FullName);
@@ -200,15 +212,16 @@ static class SelfTest
         failures += Check("Fenster neben dem Bildschirm wird verworfen", !(saved with { Left = 3000 }).FitsOn(screen));
         failures += Check("nie gespeichertes Fenster wird mittig", !new AppSettings().FitsOn(screen));
 
+        failures += Check("Ziehordner: laufendes Fenster bleibt, alter Name ohne Prozess-ID nicht",
+            PageDragData.OwnerRuns($"{Environment.ProcessId}-{Guid.NewGuid():N}") && !PageDragData.OwnerRuns(Guid.NewGuid().ToString("N"))
+            && !PageDragData.OwnerRuns($"4-{Guid.NewGuid():N}")); // Prozess 4 ist System, kein Fletta
+
         // Anmeldung als PDF-Programm: Pfad mit Leerzeichen muss in Anführungszeichen stehen.
         var entries = FileAssociation.Entries(@"C:\Program Files\Fletta\Fletta.exe");
         failures += Check("Öffnen-Befehl mit Anführungszeichen",
             entries.Any(e => e.Key.EndsWith(@"shell\open\command") && e.Value == "\"C:\\Program Files\\Fletta\\Fletta.exe\" \"%1\""));
         failures += Check(".pdf zeigt auf die ProgID", entries.Contains((@"Software\Classes\.pdf\OpenWithProgids", FileAssociation.ProgId, "")));
 
-        failures += Check("Druckbereich 3–5 von 10", PagePrinter.PagesFor(3, 5, 10).SequenceEqual([2, 3, 4]));
-        failures += Check("Druckbereich über das Ende begrenzt", PagePrinter.PagesFor(0, 99, 10).SequenceEqual(Enumerable.Range(0, 10)));
-        failures += Check("Druckbereich rückwärts ergibt die Startseite", PagePrinter.PagesFor(7, 2, 10).SequenceEqual([6]));
         // Windows-Druckdialog: Seite 0 hoch und mit R gedreht, Seite 1 quer. Aufs Hochblatt: eine Vierteldrehung
         // zurück, also Seite 0 wieder aufrecht (nicht auf dem Kopf), Seite 1 gegen den Uhrzeigersinn.
         var printJob = new PrintJob(null!, [new Size(595, 842), new Size(842, 595)], [1, 0], "Test", [], _ => { });

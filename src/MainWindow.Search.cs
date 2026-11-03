@@ -10,7 +10,7 @@ namespace Fletta;
 /// <summary>
 /// Suche (Strg+F). PDFium braucht für den Text einer Seite den zerlegten Seiteninhalt. Fletta liest ihn je Seite einmal im
 /// Hintergrund (ab der aktuellen Seite, nur wenn sonst nichts zu rendern ist), merkt ihn sich und sucht darin selbst; jede
-/// weitere Suche ist dann sofort da. Gemessen: das 990-Seiten-Handbuch (990 Seiten) ist auf der Test-VM in unter 10 s gelesen
+/// weitere Suche ist dann sofort da. Gemessen: das 990-Seiten-Handbuch ist auf der Test-VM in unter 10 s gelesen
 /// (2026-09-18). Wo ein Treffer auf der Seite steht, fragt Fletta erst, wenn die Seite zu sehen ist.
 /// </summary>
 public partial class MainWindow

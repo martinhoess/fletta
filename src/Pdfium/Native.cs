@@ -3,7 +3,7 @@ using System.Runtime.InteropServices;
 namespace Fletta.Pdfium;
 
 /// <summary>
-/// Nur die PDFium-Funktionen, die Fletta braucht. Signaturen aus den Headern von chromium/8044 (fpdfview.h und die
+/// Nur die PDFium-Funktionen, die Fletta braucht. Signaturen aus den Headern von chromium/8125 (fpdfview.h und die
 /// jeweils genannten fpdf_*.h, darunter fpdf_annot.h und fpdf_formfill.h).
 /// FPDF_BOOL ist ein int, daher MarshalAs(Bool) mit 4 Byte.
 /// </summary>

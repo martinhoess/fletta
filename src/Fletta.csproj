@@ -11,7 +11,7 @@
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <AssemblyName>Fletta</AssemblyName>
     <RootNamespace>Fletta</RootNamespace>
-    <Version>0.14.1</Version>
+    <Version>0.14.2</Version>
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <ApplicationIcon>fletta.ico</ApplicationIcon>
     <!-- pdfium.dll gibt es hier nur für x64. -->
@@ -33,8 +33,8 @@
 
   <!-- PDFium aus bblanchon/pdfium-binaries. Tag und SHA-256 ziehen immer zusammen um. -->
   <PropertyGroup>
-    <PdfiumTag>chromium/8044</PdfiumTag>
-    <PdfiumSha256>78a17d9a5f14467631c26a3ac8741b27a0471ecc05bd6a119b523598160a0537</PdfiumSha256>
+    <PdfiumTag>chromium/8125</PdfiumTag>
+    <PdfiumSha256>9a964261760cff52570aabf038ab346d3a5034dd8b30d0d5fe8861235d356b8b</PdfiumSha256>
     <PdfiumDir>$(MSBuildProjectDirectory)\..\lib\pdfium-$([System.IO.Path]::GetFileName('$(PdfiumTag)'))</PdfiumDir>
     <PdfiumArchive>$(PdfiumDir)\pdfium-win-x64.tgz</PdfiumArchive>
   </PropertyGroup>

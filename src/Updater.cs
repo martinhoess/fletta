@@ -128,19 +128,48 @@ static class Updater
         // sonst ewig. Die Frist beginnt mit jedem Block neu — eine feste fürs Ganze bräche langsame Leitungen ab.
         var idle = TimeSpan.FromSeconds(60);
         using var stalled = new CancellationTokenSource(idle);
-        await using (var target = File.Create(path))
-        await using (var source = await http.GetStreamAsync(release.SetupUrl, stalled.Token))
-        {
-            var buffer = new byte[81920];
-            for (int read; (read = await source.ReadAsync(buffer, stalled.Token)) > 0; stalled.CancelAfter(idle))
-                await target.WriteAsync(buffer.AsMemory(0, read));
-        }
         string hash;
-        await using (var written = File.OpenRead(path))
-            hash = Convert.ToHexStringLower(await SHA256.HashDataAsync(written));
+        try
+        {
+            await using (var target = File.Create(path))
+            await using (var source = await http.GetStreamAsync(release.SetupUrl, stalled.Token))
+            {
+                var buffer = new byte[81920];
+                for (int read; (read = await source.ReadAsync(buffer, stalled.Token)) > 0; stalled.CancelAfter(idle))
+                    await target.WriteAsync(buffer.AsMemory(0, read));
+            }
+            await using (var written = File.OpenRead(path))
+                hash = Convert.ToHexStringLower(await SHA256.HashDataAsync(written));
+        }
+        catch
+        {
+            TryDelete(path); // abgebrochenes Laden: keine halbe Datei liegen lassen
+            throw;
+        }
         if (hash.Equals(release.Sha256, StringComparison.OrdinalIgnoreCase)) return path;
         File.Delete(path); // ein Setup, das nicht passt, bleibt nicht zum versehentlichen Starten liegen
         throw new InvalidDataException("Prüfsumme des Setups stimmt nicht");
+    }
+
+    /// <summary>
+    /// Beim Start: geladene Setups anderer Versionen aus %TEMP% wegräumen. Das der laufenden Version bleibt — direkt nach
+    /// dem Update läuft es womöglich noch. Ein Setup, das ein anderes Fenster gerade lädt oder ausführt, ist offen und bleibt.
+    /// </summary>
+    public static void CleanUp()
+    {
+        var mine = $"Fletta-{Current}-setup.exe";
+        try
+        {
+            foreach (var setup in Directory.EnumerateFiles(Path.GetTempPath(), "Fletta-*-setup.exe"))
+                if (!Path.GetFileName(setup).Equals(mine, StringComparison.OrdinalIgnoreCase)) TryDelete(setup);
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException) { }
+    }
+
+    static void TryDelete(string path)
+    {
+        try { File.Delete(path); }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException) { }
     }
 
     /// <summary>

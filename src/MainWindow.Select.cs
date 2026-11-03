@@ -9,7 +9,7 @@ namespace Fletta;
 
 /// <summary>
 /// Text mit der Maus markieren und kopieren. Die linke Taste entscheidet nach der Stelle: liegt sie auf einem Zeichen,
-/// markiert der Zug, sonst schiebt er die Ansicht wie bisher (gewählt, 2026-09-22). Der Zeiger zeigt es vorher als
+/// markiert der Zug, sonst schiebt er die Ansicht wie bisher (nach Rückmeldung, 2026-09-22). Der Zeiger zeigt es vorher als
 /// I-Balken an, und über der Seite gelesene Zeichenkästen (dieselben wie beim Textmarker) machen den nächsten Druck
 /// treffsicher. Markiert wird innerhalb einer Seite; die Marken liegen in der 1-×-1-Leinwand der Suchtreffer und wachsen
 /// darum beim Zoomen mit, ohne neu gezeichnet zu werden.

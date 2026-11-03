@@ -25,7 +25,7 @@ DisableProgramGroupPage=yes
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 MinVersion=10.0
-; Laufende Fenster beendet der Restart Manager über die gesperrte EXE, beim Installieren wie beim Entfernen.
+; Laufende Fenster beendet der Restart Manager über die gesperrte EXE — nur beim Installieren; beim Entfernen [Code] unten.
 CloseApplications=force
 RestartApplications=no
 ChangesAssociations=yes
@@ -43,6 +43,8 @@ Name: "de"; MessagesFile: "compiler:Languages\German.isl"
 [CustomMessages]
 en.OpenDefaultApps=Open Default apps (set .pdf to {#AppName} there)
 de.OpenDefaultApps=Standard-Apps öffnen (dort .pdf auf {#AppName} stellen)
+en.FlettaRunning={#AppName} is still running. Please close it and click Retry, or Cancel.
+de.FlettaRunning={#AppName} läuft noch. Bitte schließen und Wiederholen, oder Abbrechen.
 
 [Tasks]
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked
@@ -62,8 +64,48 @@ Filename: "ms-settings:defaultapps"; Description: "{cm:OpenDefaultApps}"; Flags:
 Filename: "{app}\{#AppExeName}"; Description: "{cm:LaunchProgram,{#AppName}}"; Flags: postinstall nowait skipifsilent unchecked
 
 [UninstallRun]
-; CloseApplications greift nur beim Installieren: offene Fenster aus diesem Ordner sonst sperren die EXE,
-; und der Ordner bliebe nach dem Entfernen liegen (auf der Test-VM so passiert). ponytail: trifft jede Fletta.exe,
-; auch aus einem anderen Ordner; Pfadfilter erst, wenn das stört (Apostroph im Profilpfad bricht PowerShell-Quoting).
-Filename: "{sys}\taskkill.exe"; Parameters: "/F /IM {#AppExeName}"; RunOnceId: "CloseApp"; Flags: runhidden waituntilterminated
+; Offene Fenster beendet vorher CurUninstallStepChanged(usAppMutexCheck) (unten).
 Filename: "{app}\{#AppExeName}"; Parameters: "--unregister"; RunOnceId: "UnregisterPdf"; Flags: runhidden waituntilterminated
+
+[Code]
+// CloseApplications greift nur beim Installieren: offene Fenster aus diesem Ordner sonst sperren die EXE, und der Ordner
+// bliebe nach dem Entfernen liegen (auf der Test-VM so passiert). Erst ohne /F beenden, damit Fenster mit ungespeicherten
+// Änderungen nachfragen. Läuft Fletta nach etwa 10 s noch, fragt das Entfernen nach (Wiederholen/Abbrechen) — hart
+// beendet (/F) wird nur beim stillen Entfernen, wo niemand gefragt werden kann. Nur Prozesse des eigenen Benutzers.
+// usAppMutexCheck kommt nach der Rückfrage „Wirklich entfernen?“ und kann noch per Abort abbrechen (Setup.Uninstall.pas, 6.7).
+// shortcut: trifft jede Fletta.exe des Benutzers, auch aus einem anderen Ordner; Pfadfilter erst, wenn das stört.
+function OwnUser(): String;
+begin
+  Result := '/FI "USERNAME eq ' + GetUserNameString() + '"';
+end;
+
+function FlettaRunning(): Boolean;
+var
+  Code: Integer;
+begin
+  Result := Exec(ExpandConstant('{cmd}'), '/C tasklist ' + OwnUser() + ' /FI "IMAGENAME eq {#AppExeName}" /NH | find /I "{#AppExeName}"',
+                 '', SW_HIDE, ewWaitUntilTerminated, Code) and (Code = 0);
+end;
+
+procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
+var
+  Code, Waited: Integer;
+begin
+  if (CurUninstallStep <> usAppMutexCheck) or not FlettaRunning() then Exit;
+  Exec(ExpandConstant('{sys}\taskkill.exe'), OwnUser() + ' /IM {#AppExeName}', '', SW_HIDE, ewWaitUntilTerminated, Code);
+  Waited := 0;
+  while FlettaRunning() and (Waited < 10000) do
+  begin
+    Sleep(500);
+    Waited := Waited + 500;
+  end;
+  while FlettaRunning() do
+  begin
+    if UninstallSilent() then
+    begin
+      Exec(ExpandConstant('{sys}\taskkill.exe'), '/F ' + OwnUser() + ' /IM {#AppExeName}', '', SW_HIDE, ewWaitUntilTerminated, Code);
+      Exit;
+    end;
+    if MsgBox(CustomMessage('FlettaRunning'), mbError, MB_RETRYCANCEL) = IDCANCEL then Abort; // Entfernen abbrechen
+  end;
+end;

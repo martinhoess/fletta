@@ -21,7 +21,7 @@ static partial class PagePrinter
     /// statt auf Papier (für „Microsoft Print to PDF“ und den Selbsttest).
     /// </summary>
     public static void Print(PdfDocument document, IReadOnlyList<int> pages, IReadOnlyList<int> quarterTurns,
-                             string printer, short copies, string title, string? toFile = null, byte[]? devMode = null)
+                             string printer, short copies, string title, string? toFile = null)
     {
         // Während des Drucks hält der Render-Thread den Prozess am Leben: wird das Fenster mitten im
         // Auftrag geschlossen, bräche ein Hintergrund-Thread sonst ohne EndDoc ab, der Druck wäre weg.
@@ -30,7 +30,7 @@ static partial class PagePrinter
         thread.IsBackground = false;
         try
         {
-            PrintJob(document, pages, quarterTurns, printer, copies, title, toFile, devMode);
+            PrintJob(document, pages, quarterTurns, printer, copies, title, toFile);
         }
         finally
         {
@@ -39,11 +39,10 @@ static partial class PagePrinter
     }
 
     static void PrintJob(PdfDocument document, IReadOnlyList<int> pages, IReadOnlyList<int> quarterTurns,
-                         string printer, short copies, string title, string? toFile, byte[]? devMode)
+                         string printer, short copies, string title, string? toFile)
     {
         using var job = new PrintDocument { DocumentName = title, PrintController = new StandardPrintController() };
         job.PrinterSettings.PrinterName = printer;
-        if (devMode is not null) ApplyDevMode(job.PrinterSettings, devMode); // beidseitig, Papier, Schacht …
         job.PrinterSettings.Copies = copies;
         if (toFile is not null)
         {
@@ -83,30 +82,6 @@ static partial class PagePrinter
             e.HasMorePages = ++next < pages.Count;
         };
         job.Print();
-    }
-
-    /// <summary>DEVMODE aus dem Druckdialog übernehmen; PrinterSettings kopiert den Speicher, danach freigeben.</summary>
-    static void ApplyDevMode(PrinterSettings settings, byte[] devMode)
-    {
-        var handle = Marshal.AllocHGlobal(devMode.Length);
-        try
-        {
-            Marshal.Copy(devMode, 0, handle, devMode.Length);
-            settings.SetHdevmode(handle);
-            settings.DefaultPageSettings.SetHdevmode(handle);
-        }
-        finally
-        {
-            Marshal.FreeHGlobal(handle);
-        }
-    }
-
-    /// <summary>Seitenindizes für einen Bereich aus dem Druckdialog (1-basiert, begrenzt aufs Dokument).</summary>
-    public static int[] PagesFor(int from, int to, int count)
-    {
-        from = Math.Clamp(from, 1, count);
-        to = Math.Clamp(to, from, count);
-        return [.. Enumerable.Range(from - 1, to - from + 1)];
     }
 
     [LibraryImport("gdi32.dll")]
