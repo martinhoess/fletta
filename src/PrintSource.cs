@@ -230,6 +230,7 @@ internal sealed class PreviewPages(PrintJob job, PrintSource source, IPrintPrevi
     int[] pages = [];
     double? percent;
     Windows.Foundation.Rect? imageable; // bedruckbarer Bereich als Anteil des Blatts, wie im Druck (PrintPages)
+    Windows.Foundation.Size? paper;     // Blatt in DIPs — MakePage nennt nur die Größe des Vorschaufelds
 
     public void Paginate(uint currentJobPage, nint printTaskOptions)
     {
@@ -237,8 +238,10 @@ internal sealed class PreviewPages(PrintJob job, PrintSource source, IPrintPrevi
         pages = job.SelectedPages(options);
         percent = PrintJob.PercentOf(options);
         imageable = null;
+        paper = null;
         if (options?.GetPageDescription(1) is { PageSize: { Width: > 0, Height: > 0 } size } description)
         {
+            paper = size;
             var area = description.ImageableRect;
             imageable = new(area.X / size.Width, area.Y / size.Height, area.Width / size.Width, area.Height / size.Height);
         }
@@ -251,14 +254,16 @@ internal sealed class PreviewPages(PrintJob job, PrintSource source, IPrintPrevi
         var number = desiredJobPage == ApplicationDefined ? 1 : desiredJobPage;
         if (number < 1 || number > pages.Length) return;
         if (width < 1 || height < 1) (width, height) = (612, 792); // Letter, falls der Dialog nichts vorgibt
-        // Der Dialog nennt die Blattgröße in DIPs; wir verkleinern nur, wenn es zu viele Pixel würden.
+        // Der Dialog nennt die Größe des Vorschaufelds in DIPs; wir verkleinern nur, wenn es zu viele Pixel würden.
         var scale = MathF.Min(1f, MathF.Sqrt(MaxPreviewPixels / (width * height)));
         int sheetWidth = Math.Max(1, (int)(width * scale)), sheetHeight = Math.Max(1, (int)(height * scale));
         source.Use(gpu =>
         {
             // Wie auf dem Papier: nur in den bedruckbaren Bereich, ringsum der Druckerrand weiß.
             var area = Area(sheetWidth, sheetHeight);
-            var inner = job.RenderSheet(pages[number - 1], area.Width, area.Height, scale * 96 / 72, percent);
+            // Pixel je Punkt aus dem echten Blatt, nicht aus dem Vorschaufeld — sonst ist 100 % in der Vorschau gezoomt.
+            var pixelsPerDip = paper is { } p ? Math.Min(sheetWidth / p.Width, sheetHeight / p.Height) : scale;
+            var inner = job.RenderSheet(pages[number - 1], area.Width, area.Height, pixelsPerDip * 96 / 72, percent);
             var pixels = new byte[sheetWidth * sheetHeight * 4];
             Array.Fill(pixels, byte.MaxValue);
             for (var row = 0; row < area.Height; row++)

@@ -2,6 +2,11 @@
 
 Die Release-CI übernimmt den Abschnitt der jeweiligen Version als Text des GitHub-Releases.
 
+## 0.15.1
+
+- Druckvorschau bei „Eigene Größe“: 100 % zeigt jetzt die Originalgröße. Vorher rechnete die Vorschau mit der Größe ihres Fensters statt mit dem Blatt und wirkte vergrößert.
+- Enthält alles aus 0.15.0, das nur als Vorabversion erschienen ist (Skalierung im Druckdialog).
+
 ## 0.15.0
 
 - Druckdialog mit Einstellung „Skalierung“: „An Blatt anpassen“ (wie bisher) oder „Eigene Größe“ mit einer Zahl in „Größe in %“ (1 bis 1000, 100 = tatsächliche Größe). Was dabei über das Blatt ragt, wird mittig abgeschnitten. Die Vorschau folgt der Wahl.
