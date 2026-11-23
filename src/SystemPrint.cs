@@ -4,6 +4,7 @@ using System.Windows;
 using System.Windows.Threading;
 using Fletta.Pdfium;
 using Windows.Graphics.Printing;
+using Windows.Graphics.Printing.OptionDetails;
 
 namespace Fletta;
 
@@ -74,6 +75,27 @@ public sealed record PrintJob(PageRenderer Renderer, IReadOnlyList<Size> PageSiz
         return shown.Width > shown.Height != sheetIsLandscape ? (turns + 3) % 4 : turns;
     }
 
+    public const string ScalingOption = "FlettaScaling", PercentOption = "FlettaPercent", CustomSize = "custom";
+
+    /// <summary>Prozent aus dem Dialog, wenn „Eigene Größe“ gewählt und die Zahl gültig ist; sonst null = eingepasst.</summary>
+    public static double? PercentOf(PrintTaskOptions? options)
+    {
+        if (options is null) return null;
+        var all = PrintTaskOptionDetails.GetFromPrintTaskOptions(options).Options;
+        return all.TryGetValue(ScalingOption, out var mode) && mode.Value as string == CustomSize
+            && all.TryGetValue(PercentOption, out var percent) ? ParsePercent(percent.Value as string) : null;
+    }
+
+    /// <summary>„150“, „87,5 %“, „87.5“ → Zahl; leer, Unsinn oder außerhalb 1–1000 → null.</summary>
+    public static double? ParsePercent(string? text) =>
+        double.TryParse(text?.Replace('%', ' ').Replace(',', '.').Trim(), System.Globalization.NumberStyles.Float,
+                        System.Globalization.CultureInfo.InvariantCulture, out var percent) && percent is >= 1 and <= 1000
+            ? percent : null;
+
+    /// <summary>Pixel je PDF-Punkt: ohne percent aufs Blatt eingepasst, sonst so groß wie verlangt — auch über das Blatt hinaus.</summary>
+    public static double ScaleFor(Size shown, int sheetWidth, int sheetHeight, double pixelsPerPoint, double? percent) =>
+        percent is { } p ? pixelsPerPoint * p / 100 : Math.Min(sheetWidth / shown.Width, sheetHeight / shown.Height);
+
     public Size ShownSize(int page, int turns)
     {
         var size = PageSizes[page];
@@ -81,22 +103,23 @@ public sealed record PrintJob(PageRenderer Renderer, IReadOnlyList<Size> PageSiz
     }
 
     /// <summary>
-    /// Ein Blatt als BGRA-Puffer: weiß, Seite mittig eingepasst, gedreht wie angezeigt. Blockiert auf
+    /// Ein Blatt als BGRA-Puffer: weiß, Seite mittig eingepasst oder in percent (pixelsPerPoint = 100 %), was übers
+    /// Blatt ragt, fällt weg; gedreht wie angezeigt. Blockiert auf
     /// dem Render-Thread — PDFium sieht nur diesen. Bricht der Renderer ab, fliegt TaskCanceledException.
     /// </summary>
-    public byte[] RenderSheet(int page, int sheetWidth, int sheetHeight)
+    public byte[] RenderSheet(int page, int sheetWidth, int sheetHeight, double pixelsPerPoint, double? percent)
     {
         var stride = sheetWidth * 4;
         var sheet = new byte[stride * sheetHeight];
-        Array.Fill(sheet, byte.MaxValue); // weißer Grund, Alpha inklusive
         var turns = TurnsFor(page, sheetWidth > sheetHeight);
         var shown = ShownSize(page, turns);
-        var scale = Math.Min(sheetWidth / shown.Width, sheetHeight / shown.Height);
+        var scale = ScaleFor(shown, sheetWidth, sheetHeight, pixelsPerPoint, percent);
         int width = Math.Max(1, (int)(shown.Width * scale)), height = Math.Max(1, (int)(shown.Height * scale));
-        var bitmap = Renderer.Invoke(document => document.Render(page, width, height, 96, 96, turns, RenderPurpose.Print))
+        // Direkt aufs Blatt: bei Übergröße liegt die Ecke im Minus, PDFium schneidet am Rand ab (kein Riesenbild).
+        var placement = new Int32Rect((sheetWidth - width) / 2, (sheetHeight - height) / 2, width, height);
+        var bitmap = Renderer.Invoke(document => document.Render(page, sheetWidth, sheetHeight, 96, 96, turns, RenderPurpose.Print, placement))
                              .GetAwaiter().GetResult();
-        var offset = (sheetHeight - height) / 2 * stride + (sheetWidth - width) / 2 * 4;
-        bitmap.CopyPixels(new Int32Rect(0, 0, width, height), sheet, stride, offset);
+        bitmap.CopyPixels(sheet, stride, 0);
         // PDFium liefert BGRx: das vierte Byte ist nicht verlässlich gesetzt, DXGI/D2D brauchen es opak.
         var words = MemoryMarshal.Cast<byte, uint>(sheet.AsSpan());
         for (var i = 0; i < words.Length; i++) words[i] |= 0xFF000000;
@@ -132,6 +155,24 @@ public static class SystemPrint
             ranges.AllowCurrentPage = false; // der Dialog weiß nicht, welche Seite Fletta gerade zeigt
             // Markierte Miniaturen kommen vorbelegt in den Dialog, je zusammenhängendem Lauf ein Bereich.
             foreach (var (from, to) in job.Preselect) task.Options.CustomPageRanges.Add(new PrintPageRange(from, to));
+            var details = PrintTaskOptionDetails.GetFromPrintTaskOptions(task.Options);
+            var scaling = details.CreateItemListOption(PrintJob.ScalingOption, "Skalierung");
+            scaling.AddItem("fit", "An Blatt anpassen");
+            scaling.AddItem(PrintJob.CustomSize, "Eigene Größe");
+            scaling.TrySetValue("fit");
+            var percent = details.CreateTextOption(PrintJob.PercentOption, "Größe in % (bei eigener Größe)");
+            percent.MaxCharacters = 6;
+            percent.TrySetValue("100");
+            task.Options.DisplayedOptions.Add(PrintJob.ScalingOption);
+            task.Options.DisplayedOptions.Add(PrintJob.PercentOption);
+            details.OptionChanged += (_, args) =>
+            {
+                if (args.OptionId as string is not (PrintJob.ScalingOption or PrintJob.PercentOption)) return;
+                // Nur bei „Eigene Größe“ ein Fehler: beim Einpassen spielt das Feld keine Rolle und soll nichts sperren.
+                percent.ErrorText = scaling.Value as string == PrintJob.CustomSize
+                    && PrintJob.ParsePercent(percent.Value as string) is null ? "Zahl von 1 bis 1000" : "";
+                source.InvalidatePreview();
+            };
             task.Completed += (_, _) => { source.Dispose(); done.TrySetResult(); };
             started = true;
         }

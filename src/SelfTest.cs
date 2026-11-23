@@ -37,6 +37,13 @@ static class SelfTest
                 failures += Check("Rand bleibt weiß", RgbAt(bitmap, 2, 2) == 0xFFFFFF);
                 failures += Check("Mitte ist blau", RgbAt(bitmap, 60, 84) == 0x0000FF);
                 failures += Check("rot oben links", RgbAt(bitmap, 11, 11) == 0xFF0000);
+                // Druck in eigener Größe: Seite doppelt so groß, Ecke im Minus — das Bild zeigt das untere rechte Viertel,
+                // oben links also die Seitenmitte (blau) und nirgends das rote Quadrat; volle Lage gleicht dem Aufruf ohne.
+                var quarter = doc.Render(0, 119, 168, 96, 96, 0, RenderPurpose.Print, new Int32Rect(-119, -168, 238, 336));
+                failures += Check("Lage über den Rand: Seitenmitte oben links, kein Rot", RgbAt(quarter, 1, 1) == 0x0000FF
+                    && Pixels(quarter).Chunk(4).All(p => !(p[2] > 200 && p[1] < 60 && p[0] < 60))); // kein Rot, auch kein angeschnittenes
+                failures += Check("Lage ganzes Bild wie ohne",
+                    Pixels(doc.Render(0, 119, 168, 96, 96, 0, RenderPurpose.Copy, new Int32Rect(0, 0, 119, 168))).SequenceEqual(Pixels(bitmap)));
 
                 // Rechts gedreht wandert oben links nach oben rechts: (x, y) → (Höhe − 1 − y, x).
                 var right = doc.Render(0, 168, 119, 96, 96, 1);
@@ -227,6 +234,14 @@ static class SelfTest
         var printJob = new PrintJob(null!, [new Size(595, 842), new Size(842, 595)], [1, 0], "Test", [], _ => { });
         failures += Check("Druck: Drehung aufs Blatt", printJob.TurnsFor(0, sheetIsLandscape: false) == 0
             && printJob.TurnsFor(1, sheetIsLandscape: false) == 3 && printJob.TurnsFor(1, sheetIsLandscape: true) == 0);
+        // Skalierung bei 1 px/pt: A4 (595 × 842 pt) auf A3-Blatt eingepasst wächst, mit 100 % bleibt sie 1:1, mit 200 % doppelt
+        // — auch über das Blatt hinaus.
+        failures += Check("Druck: Skalierung", PrintJob.ScaleFor(new Size(595, 842), 842, 1191, 1.0, null) > 1.4
+            && PrintJob.ScaleFor(new Size(595, 842), 842, 1191, 1.0, 100) == 1.0
+            && PrintJob.ScaleFor(new Size(595, 842), 842, 1191, 1.0, 200) == 2.0);
+        failures += Check("Druck: Prozent lesen", PrintJob.ParsePercent("150") == 150 && PrintJob.ParsePercent("87,5 %") == 87.5
+            && PrintJob.ParsePercent("87.5") == 87.5 && PrintJob.ParsePercent("0") is null && PrintJob.ParsePercent("abc") is null
+            && PrintJob.ParsePercent("") is null && PrintJob.ParsePercent(null) is null);
         // Markierte Miniaturen 0,1,2 und 5 (0-basiert) werden im Dialog zu „1-3“ und „6“.
         failures += Check("Druck: markierte Seiten als Läufe",
             PrintJob.RunsOf([0, 1, 2, 5]).SequenceEqual([(1, 3), (6, 6)]) && PrintJob.RunsOf([]).Length == 0);
@@ -688,6 +703,13 @@ static class SelfTest
     {
         try { PdfDocument.Open(path).Dispose(); return 0; }
         catch (PdfException e) { return e.Code; }
+    }
+
+    static byte[] Pixels(BitmapSource bitmap)
+    {
+        var bytes = new byte[bitmap.PixelWidth * bitmap.PixelHeight * 4];
+        bitmap.CopyPixels(bytes, bitmap.PixelWidth * 4, 0);
+        return bytes;
     }
 
     static int RgbAt(BitmapSource bitmap, int x, int y)

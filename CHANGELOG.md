@@ -2,6 +2,10 @@
 
 Die Release-CI übernimmt den Abschnitt der jeweiligen Version als Text des GitHub-Releases.
 
+## 0.15.0
+
+- Druckdialog mit Einstellung „Skalierung“: „An Blatt anpassen“ (wie bisher) oder „Eigene Größe“ mit einer Zahl in „Größe in %“ (1 bis 1000, 100 = tatsächliche Größe). Was dabei über das Blatt ragt, wird mittig abgeschnitten. Die Vorschau folgt der Wahl.
+
 ## 0.14.2
 
 - Wurde die geöffnete PDF von einem anderen Programm geändert, überschreibt Strg+S sie nicht mehr mit dem alten Stand, und Strg+Z wendet die eigenen Schritte nicht auf den neuen Inhalt an. Fletta sagt dann „… wurde außerhalb geändert – erst neu laden“ und bietet „Neu laden“ oder „Abbrechen“ an.

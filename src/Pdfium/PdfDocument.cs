@@ -135,8 +135,10 @@ public sealed class PdfDocument : IDisposable
     /// die Pixelgröße ist dann die gedrehte. purpose: siehe RenderPurpose.
     /// </summary>
     public BitmapSource Render(int index, int pixelWidth, int pixelHeight, double dpiX, double dpiY, int quarterTurns,
-                               RenderPurpose purpose = RenderPurpose.Copy)
+                               RenderPurpose purpose = RenderPurpose.Copy, Int32Rect? placement = null)
     {
+        // placement: Lage der Seite im Bild (Druck mit eigener Größe), darf über den Rand ragen; sonst füllt sie es.
+        var (x, y, width, height) = placement is { } p ? (p.X, p.Y, p.Width, p.Height) : (0, 0, pixelWidth, pixelHeight);
         var flags = RenderAnnotations | (purpose == RenderPurpose.Print ? RenderForPrinting : 0);
         var page = LoadPage(index);
         var bitmap = new WriteableBitmap(pixelWidth, pixelHeight, dpiX, dpiY, PixelFormats.Bgr32, null);
@@ -148,7 +150,7 @@ public sealed class PdfDocument : IDisposable
                                                     bitmap.BackBuffer, bitmap.BackBufferStride);
             if (target == 0) throw new PdfException(PdfException.PageError);
             Native.FPDFBitmap_FillRect(target, 0, 0, pixelWidth, pixelHeight, White);
-            Native.FPDF_RenderPageBitmap(target, page, 0, 0, pixelWidth, pixelHeight, quarterTurns, flags);
+            Native.FPDF_RenderPageBitmap(target, page, x, y, width, height, quarterTurns, flags);
             if (form != 0)
             {
                 Native.FPDF_SetFormFieldHighlightAlpha(form, purpose == RenderPurpose.Screen ? FieldHighlightAlpha : (byte)0);
@@ -157,7 +159,7 @@ public sealed class PdfDocument : IDisposable
                 var hidden = purpose == RenderPurpose.Print ? HideUnprintableFields(page) : [];
                 try
                 {
-                    Native.FPDF_FFLDraw(form, target, page, 0, 0, pixelWidth, pixelHeight, quarterTurns, flags);
+                    Native.FPDF_FFLDraw(form, target, page, x, y, width, height, quarterTurns, flags);
                 }
                 finally
                 {

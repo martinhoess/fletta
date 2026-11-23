@@ -29,7 +29,8 @@ internal sealed class PrintSource : IDisposable
 
     readonly PrintJob job;
     PrintGpu? gpu;
-    bool disposed;
+    PreviewPages? preview; // für InvalidatePreview, wenn im Dialog die Skalierung wechselt
+    volatile bool disposed;
 
     public PrintSource(PrintJob job) => this.job = job;
 
@@ -58,9 +59,17 @@ internal sealed class PrintSource : IDisposable
         try
         {
             var preview = (IPrintPreviewDxgiPackageTarget)Rcw.GetOrCreateObjectForComInstance(dxgi, CreateObjectFlags.UniqueInstance);
-            return new PreviewPages(job, this, preview);
+            return this.preview = new PreviewPages(job, this, preview);
         }
         finally { Marshal.Release(dxgi); }
+    }
+
+    /// <summary>Vorschau neu anfordern. Ohne gate: das Drucksystem ruft darauf hin MakePage, das gate braucht.</summary>
+    public void InvalidatePreview()
+    {
+        if (disposed || preview is not { } pages) return;
+        try { pages.Target.InvalidatePreview(); }
+        catch (Exception e) { if (!disposed) job.Notify($"Druckvorschau nicht neu gezeichnet: {e.Message}"); } // zu: nichts mehr zu zeichnen
     }
 
     public void MakeDocument(nint printTaskOptions, nint docPackageTarget)
@@ -213,15 +222,26 @@ internal sealed unsafe class PrintCcw : ComWrappers
 /// <summary>Vorschauseiten. Paginate legt die Seitenauswahl fest, MakePage liefert je ein Blattbild.</summary>
 internal sealed class PreviewPages(PrintJob job, PrintSource source, IPrintPreviewDxgiPackageTarget target)
 {
+    public IPrintPreviewDxgiPackageTarget Target => target;
+
     const uint FinalPageCount = 0, ApplicationDefined = 0xFFFFFFFF;
     const float MaxPreviewPixels = 4_000_000f; // deckelt den Speicher bei großem Vorschaufenster
 
     int[] pages = [];
+    double? percent;
+    Windows.Foundation.Rect? imageable; // bedruckbarer Bereich als Anteil des Blatts, wie im Druck (PrintPages)
 
     public void Paginate(uint currentJobPage, nint printTaskOptions)
     {
         var options = printTaskOptions == 0 ? null : WinRT.MarshalInspectable<PrintTaskOptions>.FromAbi(printTaskOptions);
         pages = job.SelectedPages(options);
+        percent = PrintJob.PercentOf(options);
+        imageable = null;
+        if (options?.GetPageDescription(1) is { PageSize: { Width: > 0, Height: > 0 } size } description)
+        {
+            var area = description.ImageableRect;
+            imageable = new(area.X / size.Width, area.Y / size.Height, area.Width / size.Width, area.Height / size.Height);
+        }
         target.SetJobPageCount(FinalPageCount, (uint)Math.Max(1, pages.Length));
     }
 
@@ -236,10 +256,24 @@ internal sealed class PreviewPages(PrintJob job, PrintSource source, IPrintPrevi
         int sheetWidth = Math.Max(1, (int)(width * scale)), sheetHeight = Math.Max(1, (int)(height * scale));
         source.Use(gpu =>
         {
-            var pixels = job.RenderSheet(pages[number - 1], sheetWidth, sheetHeight);
+            // Wie auf dem Papier: nur in den bedruckbaren Bereich, ringsum der Druckerrand weiß.
+            var area = Area(sheetWidth, sheetHeight);
+            var inner = job.RenderSheet(pages[number - 1], area.Width, area.Height, scale * 96 / 72, percent);
+            var pixels = new byte[sheetWidth * sheetHeight * 4];
+            Array.Fill(pixels, byte.MaxValue);
+            for (var row = 0; row < area.Height; row++)
+                Buffer.BlockCopy(inner, row * area.Width * 4, pixels, ((area.Y + row) * sheetWidth + area.X) * 4, area.Width * 4);
             using var surface = gpu.CreateSurface(sheetWidth, sheetHeight, pixels);
             target.DrawPage(number, surface.NativePointer, 96f * scale, 96f * scale); // nie den Platzhalter 0xFFFFFFFF
         });
+    }
+
+    /// <summary>Bedruckbarer Bereich in Vorschaupixeln, ins Blatt geklemmt; ohne Angabe des Dialogs das ganze Blatt.</summary>
+    Int32Rect Area(int sheetWidth, int sheetHeight)
+    {
+        if (imageable is not { } r) return new(0, 0, sheetWidth, sheetHeight);
+        int x = Math.Clamp((int)(r.X * sheetWidth), 0, sheetWidth - 1), y = Math.Clamp((int)(r.Y * sheetHeight), 0, sheetHeight - 1);
+        return new(x, y, Math.Clamp((int)(r.Width * sheetWidth), 1, sheetWidth - x), Math.Clamp((int)(r.Height * sheetHeight), 1, sheetHeight - y));
     }
 }
 
@@ -298,6 +332,7 @@ internal sealed class PrintGpu : IDisposable
         using var control = d2dDevice.CreatePrintControl(wic, target,
             new PrintControlProperties { RasterDPI = PrintDpi, ColorSpace = ColorSpace.Srgb, FontSubset = PrintFontSubsetMode.Default });
         using var context = d2dDevice.CreateDeviceContext(DeviceContextOptions.None);
+        var percent = PrintJob.PercentOf(options);
         for (var i = 0; i < pages.Length; i++)
         {
             // PageSize und ImageableRect kommen in DIPs (1/96 Zoll) für genau diese Auftragsseite.
@@ -306,7 +341,9 @@ internal sealed class PrintGpu : IDisposable
             var scale = MathF.Min(PrintDpi / 96f,
                 MathF.Sqrt(MaxPrintPixels / MathF.Max(1, (float)(imageable.Width * imageable.Height))));
             int width = Math.Max(1, (int)(imageable.Width * scale)), height = Math.Max(1, (int)(imageable.Height * scale));
-            var pixels = job.RenderSheet(pages[i], width, height);
+            // shortcut: in eigener Größe mittig im bedruckbaren Bereich, nicht auf dem Blatt — bei ungleichen Rändern um
+            // die halbe Differenz versetzt (die Vorschau zeigt es genauso); erst ändern, wenn das auf Papier stört.
+            var pixels = job.RenderSheet(pages[i], width, height, scale * 96 / 72, percent);
             using var list = context.CreateCommandList();
             context.Target = list;
             context.BeginDraw();
