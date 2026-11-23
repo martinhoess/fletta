@@ -102,7 +102,8 @@ einen Pfad mit Leerzeichen und Umlauten und prüft:
   „87.5“ und lehnt 0, Text und leer ab.
   `PdfDocument.Render` mit Lage über den Rand (`placement`, Ecke im Minus) zeigt den Ausschnitt ohne Verschieben, mit voller
   Lage pixelgleich zum Aufruf ohne. Die Option „Skalierung“ im Dialog, das Neuzeichnen der Vorschau beim Umschalten und die
-  Vorschau mit Druckerrand prüft nur die Sichtprüfung (Wiki, Schritt 5, **noch nicht belegt**). Der Dialog selbst braucht ein
+  Vorschau mit Druckerrand und die Größe in der Vorschau (seit 0.15.1 aus dem Blattmaß, nicht aus dem Vorschaufeld — in 0.15.0
+  war 100 % gezoomt) prüft nur die Sichtprüfung (Wiki, Schritt 5, **noch nicht belegt**). Der Dialog selbst braucht ein
   Fenster und ist hier nicht prüfbar, siehe Sichtprüfung.
 - `PageRenderer.Invoke`: Aufgabe auf dem Render-Thread (Seitentext), nach dem Ende abgebrochen.
 - Echter Druck über den Spooler auf „Microsoft Print to PDF“ in eine Datei (zwei Seiten, zweite
